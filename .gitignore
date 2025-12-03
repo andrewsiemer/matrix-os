@@ -1,0 +1,9 @@
+*.txt
+*.json
+*.env
+
+# uv / Python
+.venv/
+__pycache__/
+*.pyc
+.python-version

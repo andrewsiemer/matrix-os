@@ -1,0 +1,24 @@
+[project]
+name = "matrix-os"
+version = "0.1.0"
+description = "RGB Matrix display applications for Raspberry Pi"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "schedule>=1.2.0",
+    "requests>=2.31.0",
+    "APScheduler>=3.10.0",
+    "pytz>=2024.1",
+    "numpy>=1.24.0",
+    "twelvedata>=1.2.0",
+    "rgbmatrix==0.0.1; sys_platform == 'linux'",
+    "pillow>=11.3.0",
+    "pydantic-settings>=2.0.0"
+]
+
+[build-system]
+requires = [ "uv_build>=0.5.15" ]
+build-backend = "uv_build"
+
+[tool.uv]
+find-links = [ "./vendor" ]
