@@ -7,13 +7,14 @@ Displays current weather from OpenWeatherMap API.
 import io
 import logging
 import threading
+import time
 from typing import Optional
 
 from PIL import Image, ImageDraw
 
-from .base import BaseApp, AppManifest, Capability
-from .fonts import get_font
-from ..core.display import FrameBuffer
+from ...core.display import FrameBuffer
+from ..base import AppManifest, BaseApp
+from ..fonts import get_font
 
 log = logging.getLogger(__name__)
 
@@ -28,7 +29,6 @@ class WeatherApp(BaseApp):
             version="1.0.0",
             description="Current weather display",
             framerate=1,
-            capabilities={Capability.NETWORK, Capability.SYSTEM_INFO},
         )
 
     def __init__(self, *args, lat: float = None, lon: float = None, **kwargs):
@@ -56,10 +56,10 @@ class WeatherApp(BaseApp):
 
     def _fetch_weather(self) -> None:
         """Fetch weather data from API in background thread."""
+
         def fetch():
             try:
                 import requests
-                import time
 
                 url = (
                     f"https://api.openweathermap.org/data/3.0/onecall"
@@ -74,21 +74,24 @@ class WeatherApp(BaseApp):
                 if "current" in data:
                     current = data["current"]
 
+                    # Fetch icon outside lock
+                    icon_code = current["weather"][0]["icon"]
+                    icon_url = f"http://openweathermap.org/img/wn/{icon_code}@2x.png"
+                    icon_response = requests.get(icon_url, timeout=7)
+
+                    icon_img = Image.open(io.BytesIO(icon_response.content))
+                    icon_img.thumbnail((18, 18))
+                    icon = icon_img.convert("RGB")
+
+                    temp = f"{round(current['temp'])}°F"
+
+                    # Only hold lock briefly
                     with self._update_lock:
-                        self._temp = f"{round(current['temp'])}°F"
-
-                        # Fetch weather icon
-                        icon_code = current["weather"][0]["icon"]
-                        icon_url = f"http://openweathermap.org/img/wn/{icon_code}@2x.png"
-                        icon_response = requests.get(icon_url, timeout=7)
-
-                        icon_img = Image.open(io.BytesIO(icon_response.content))
-                        icon_img.thumbnail((18, 18))
-                        self._icon = icon_img.convert("RGB")
-
+                        self._temp = temp
+                        self._icon = icon
                         self._last_update = time.time()
 
-                    log.info(f"Weather updated: {self._temp}")
+                    log.info(f"Weather updated: {temp}")
 
             except Exception as e:
                 log.warning(f"Weather fetch failed: {e}")
@@ -98,8 +101,6 @@ class WeatherApp(BaseApp):
 
     def update(self) -> None:
         """Check if we need to refresh weather data."""
-        import time
-
         if time.time() - self._last_update > self._update_interval:
             self._fetch_weather()
 

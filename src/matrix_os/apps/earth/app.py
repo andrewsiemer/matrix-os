@@ -12,8 +12,8 @@ from typing import Optional
 import numpy as np
 from PIL import Image
 
-from ..core.display import FrameBuffer
-from .base import AppManifest, BaseApp, Capability
+from ...core.display import FrameBuffer
+from ..base import AppManifest, BaseApp
 
 # Constants
 TPI = 2 * pi
@@ -32,7 +32,6 @@ class EarthApp(BaseApp):
             version="1.0.0",
             description="Earth with day/night visualization",
             framerate=1,
-            capabilities={Capability.FILESYSTEM, Capability.SYSTEM_INFO},
         )
 
     def __init__(self, *args, **kwargs):

@@ -20,7 +20,7 @@ class EnvSettings(BaseSettings):
     stocks_api_key: str = ""
     slack_user_id: str = ""
     slack_token: str = ""
-    local_tz: str = "America/Los_Angeles"
+    local_tz: str = "America/Chicago"
     weather_api_key: str = ""
     lat: float = 0.0
     lon: float = 0.0

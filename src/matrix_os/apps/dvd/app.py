@@ -7,8 +7,8 @@ A nostalgic bouncing DVD logo animation.
 import random
 from typing import Optional
 
-from ..core.display import FrameBuffer
-from .base import AppManifest, BaseApp, Capability
+from ...core.display import FrameBuffer
+from ..base import AppManifest, BaseApp
 
 
 class DVDApp(BaseApp):
@@ -33,7 +33,6 @@ class DVDApp(BaseApp):
             version="1.0.0",
             description="Bouncing DVD logo animation",
             framerate=10,
-            capabilities=set(),
         )
 
     def __init__(self, *args, **kwargs):

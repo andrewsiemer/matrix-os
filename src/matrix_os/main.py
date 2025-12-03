@@ -25,27 +25,25 @@ if __name__ == "__main__":
 
 # Setup logging
 logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] %(levelname)-8s (%(name)s) %(message)s",
+    level=logging.DEBUG,
+    format="%(asctime)s : %(levelname)-8s : (%(name)s) %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-log = logging.getLogger("matrixos")
+log = logging.getLogger("matrix_os")
 
 
 def main():
     """Main entry point."""
-    # Import using absolute package paths
+    # Import apps from their folders
+    from matrix_os.apps.clock import BasicClockApp, BinaryClockApp
     from matrix_os.apps.dvd import DVDApp
     from matrix_os.apps.earth import EarthApp
     from matrix_os.apps.imageviewer import ImageViewerApp
+    from matrix_os.apps.slack import SlackStatusApp
     from matrix_os.apps.stocks import StocksApp
+    from matrix_os.apps.weather import WeatherApp
+    from matrix_os.apps.welcome import WelcomeApp
     from matrix_os.core import Kernel, SystemConfig
-
-    # These are available but not enabled by default:
-    # from matrix_os.apps.weather import WeatherApp
-    # from matrix_os.apps.slack import SlackStatusApp
-    # from matrix_os.apps.welcome import WelcomeApp
-    # from matrix_os.apps.clock import BasicClockApp, BinaryClockApp
 
     log.info("=" * 50)
     log.info("MatrixOS Starting...")
@@ -56,20 +54,23 @@ def main():
     kernel = Kernel(config)
 
     # Register apps
-    # Each app runs in its own sandbox (thread or process)
-    # and communicates with the kernel via IPC
+    # Each app runs in its own process and communicates with the kernel via IPC
 
     # Fun/visual apps
-    kernel.register_app(DVDApp, duration=15)
-    kernel.register_app(EarthApp, duration=15)
-
-    # Stock ticker (using single symbol to avoid API rate limits)
+    # kernel.register_app(DVDApp, duration=15)
+    # kernel.register_app(EarthApp, duration=15)
     kernel.register_app(StocksApp, symbol="NVDA", duration=15)
+    kernel.register_app(StocksApp, symbol="VTI", duration=15)
+    # kernel.register_app(WeatherApp, duration=15)
+    # kernel.register_app(SlackStatusApp, duration=15)
+    # kernel.register_app(WelcomeApp, duration=15)
+    # kernel.register_app(BasicClockApp, duration=15)
+    # kernel.register_app(BinaryClockApp, duration=15)
 
     # Static image
-    nvidia_path = os.path.join(kernel.images_path, "nvidia.png")
-    if os.path.exists(nvidia_path):
-        kernel.register_app(ImageViewerApp, image_path=nvidia_path, duration=10)
+    # nvidia_path = os.path.join(kernel.images_path, "nvidia.png")
+    # if os.path.exists(nvidia_path):
+    #     kernel.register_app(ImageViewerApp, image_path=nvidia_path, duration=10)
 
     log.info("All apps registered. Starting kernel...")
 

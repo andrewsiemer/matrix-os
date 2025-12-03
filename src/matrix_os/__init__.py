@@ -5,9 +5,7 @@ Architecture:
     - Core: Kernel, Display, IPC, Sandbox, Scheduler
     - Apps: Sandboxed applications that render to framebuffers
 
-Each app runs isolated from the main render loop in its own thread or process,
-depending on its declared capabilities. Network and filesystem apps run in
-separate processes for security isolation.
+Each app runs in its own process, isolated from the main render loop.
 
 Example:
     from matrix_os.core import Kernel, SystemConfig
@@ -21,7 +19,7 @@ Example:
 __version__ = "2.0.0"
 __author__ = "MatrixOS Team"
 
-from .apps import AppManifest, BaseApp, Capability
+from .apps import AppManifest, BaseApp
 from .core import AppScheduler, Display, FrameBuffer, Kernel, MessageBus, Sandbox, SystemConfig
 
 __all__ = [
@@ -36,5 +34,4 @@ __all__ = [
     # Apps
     "BaseApp",
     "AppManifest",
-    "Capability",
 ]

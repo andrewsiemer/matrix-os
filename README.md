@@ -1,10 +1,10 @@
 # MatrixOS
 
-A modular LED matrix display system with IPC-based sandboxed apps for Raspberry Pi.
+A modular LED matrix display system with process-isolated apps for Raspberry Pi.
 
 ## Architecture
 
-MatrixOS is designed with a clean separation between the **core system** and **apps**:
+MatrixOS uses a clean separation between the **core system** and **apps**. Each app runs in its own process, completely isolated from the main render loop.
 
 ```
 src/matrix_os/
@@ -12,50 +12,65 @@ src/matrix_os/
 │   ├── kernel.py           # Main orchestrator, non-blocking render loop
 │   ├── display.py          # Hardware abstraction layer
 │   ├── ipc.py              # Message bus for app communication
-│   ├── sandbox.py          # Thread/process isolation for apps
+│   ├── sandbox.py          # Process isolation for apps
 │   ├── scheduler.py        # App rotation and display scheduling
 │   └── config.py           # System configuration
 │
-├── apps/                    # Sandboxed applications
-│   ├── base.py             # Base app class with capability declarations
-│   ├── clock.py            # Digital and binary clock displays
-│   ├── dvd.py              # Bouncing DVD logo animation
-│   ├── earth.py            # Earth with day/night terminator
-│   ├── imageviewer.py      # Static image display
-│   ├── slack.py            # Slack status display
-│   ├── stocks.py           # Stock ticker with charts
-│   ├── weather.py          # Weather display
-│   └── welcome.py          # Boot animation
+├── apps/                    # Process-isolated applications
+│   ├── base.py             # Base app class
+│   ├── fonts.py            # BDF font loading utilities
+│   │
+│   ├── clock/              # Clock apps
+│   │   ├── __init__.py
+│   │   └── app.py          # BasicClockApp, BinaryClockApp
+│   │
+│   ├── dvd/                # DVD bouncing logo
+│   │   ├── __init__.py
+│   │   └── app.py          # DVDApp
+│   │
+│   ├── earth/              # Earth day/night visualization
+│   │   ├── __init__.py
+│   │   └── app.py          # EarthApp
+│   │
+│   ├── imageviewer/        # Static image display
+│   │   ├── __init__.py
+│   │   └── app.py          # ImageViewerApp
+│   │
+│   ├── slack/              # Slack status display
+│   │   ├── __init__.py
+│   │   └── app.py          # SlackStatusApp
+│   │
+│   ├── stocks/             # Stock ticker with charts
+│   │   ├── __init__.py
+│   │   └── app.py          # StocksApp
+│   │
+│   ├── weather/            # Weather display
+│   │   ├── __init__.py
+│   │   └── app.py          # WeatherApp
+│   │
+│   └── welcome/            # Boot animation
+│       ├── __init__.py
+│       └── app.py          # WelcomeApp
 │
 └── main.py                  # Entry point
 ```
 
 ## Key Design Principles
 
-### 1. Non-blocking Render Loop
-The main render loop in the kernel **never blocks**. All app logic runs in separate threads or processes.
+### 1. Process Isolation
+Every app runs in its own **separate process**. This ensures:
+- Network/API calls never block the display
+- Crashed apps don't take down the system
+- True isolation between apps
 
-### 2. IPC-based Communication
+### 2. Non-blocking Render Loop
+The main render loop in the kernel **never blocks**. Apps submit frames via IPC, and the kernel composites them to the display at a steady rate.
+
+### 3. IPC-based Communication
 Apps communicate with the kernel through a message bus:
 - Apps submit rendered frames via `FRAME_READY` messages
 - Kernel sends lifecycle events (`APP_START`, `APP_STOP`, etc.)
 - No direct hardware access from apps
-
-### 3. Capability-based Sandboxing
-Apps declare their required capabilities in a manifest:
-
-```python
-class MyApp(BaseApp):
-    @classmethod
-    def get_manifest(cls) -> AppManifest:
-        return AppManifest(
-            name="My App",
-            framerate=30,
-            capabilities={Capability.NETWORK},  # Requires network access
-        )
-```
-
-Apps with `NETWORK` or `FILESYSTEM` capabilities automatically run in **separate processes** for isolation. Other apps run in lightweight threads.
 
 ### 4. Framebuffer Rendering
 Apps never touch the hardware directly. Instead, they render to a `FrameBuffer`:
@@ -117,11 +132,29 @@ matrix-os
 
 ## Creating Apps
 
-To create a new app, inherit from `BaseApp`:
+Each app lives in its own folder under `apps/`. Create a new folder with:
+- `__init__.py` - exports the app class
+- `app.py` - contains the app implementation
 
+Example app structure:
+
+```
+apps/myapp/
+├── __init__.py
+└── app.py
+```
+
+**`apps/myapp/__init__.py`:**
 ```python
-from matrix_os.apps import BaseApp, AppManifest, Capability
-from matrix_os.core import FrameBuffer
+from .app import MyApp
+
+__all__ = ["MyApp"]
+```
+
+**`apps/myapp/app.py`:**
+```python
+from ..base import AppManifest, BaseApp
+from ...core.display import FrameBuffer
 
 class MyApp(BaseApp):
     @classmethod
@@ -131,7 +164,6 @@ class MyApp(BaseApp):
             version="1.0.0",
             description="A custom app",
             framerate=30,
-            capabilities=set(),  # No special capabilities needed
         )
     
     def on_start(self) -> None:
@@ -154,15 +186,31 @@ class MyApp(BaseApp):
         pass
 ```
 
-Then register it with the kernel:
+Then register it with the kernel in `main.py`:
 
 ```python
-from matrix_os.core import Kernel
-from my_app import MyApp
+from matrix_os.apps.myapp import MyApp
 
-kernel = Kernel()
-kernel.register_app(MyApp, duration=15)  # Display for 15 seconds
-kernel.run()
+kernel.register_app(MyApp, duration=15)
+```
+
+## App Utilities
+
+Apps have access to several utility methods:
+
+```python
+# Load fonts (BDF format)
+from ..fonts import get_font
+
+font_path = self.get_font_path("5x6.bdf")
+font = get_font(font_path)
+
+# Load images
+image_path = self.get_image_path("icon.png")
+image = self.load_image(image_path, size=(32, 32))
+
+# Access environment settings
+api_key = self.get_env("api_key", default="")
 ```
 
 ## Hardware

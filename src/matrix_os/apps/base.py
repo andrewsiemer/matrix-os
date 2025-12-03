@@ -7,9 +7,8 @@ All apps must inherit from BaseApp and implement the required methods.
 import logging
 import os
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from enum import Enum, auto
-from typing import TYPE_CHECKING, Any, Dict, Optional, Set
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from PIL import Image
 
@@ -19,15 +18,6 @@ if TYPE_CHECKING:
     from ..core.kernel import Kernel
 
 log = logging.getLogger(__name__)
-
-
-class Capability(Enum):
-    """Capabilities an app can request."""
-
-    NETWORK = auto()  # Can make network requests
-    FILESYSTEM = auto()  # Can access filesystem
-    SYSTEM_INFO = auto()  # Can read system info (time, IP, etc.)
-    HIGH_FRAMERATE = auto()  # Needs >30 FPS
 
 
 @dataclass
@@ -41,20 +31,6 @@ class AppManifest:
     author: str = "unknown"
     description: str = ""
     framerate: int = 30
-    capabilities: Set[Capability] = field(default_factory=set)
-
-    def requires_network(self) -> bool:
-        return Capability.NETWORK in self.capabilities
-
-    def requires_filesystem(self) -> bool:
-        return Capability.FILESYSTEM in self.capabilities
-
-    def requires_process(self) -> bool:
-        """Check if this app should run in a separate process."""
-        # Apps with network or filesystem access run in separate processes
-        # for true isolation and to avoid blocking the main thread
-        dangerous_caps = {Capability.NETWORK, Capability.FILESYSTEM}
-        return bool(self.capabilities & dangerous_caps)
 
 
 class BaseApp(ABC):
@@ -113,9 +89,6 @@ class BaseApp(ABC):
                         self._env_settings[key] = getattr(kernel.config.env, key)
                     except Exception:
                         pass
-
-        # Don't store kernel reference - not needed at runtime and not picklable
-        # self.kernel = kernel  # Removed for multiprocessing compatibility
 
         # Get manifest from class method
         self._manifest = self.get_manifest()
@@ -204,8 +177,6 @@ class BaseApp(ABC):
     def __getstate__(self):
         """Custom pickle support - exclude unpicklable objects."""
         state = self.__dict__.copy()
-        # Channel queues are multiprocessing.Queue - they're picklable
-        # but we'll handle them separately in the process function
         if "channel" in state:
             del state["channel"]
         return state
@@ -213,4 +184,4 @@ class BaseApp(ABC):
     def __setstate__(self, state):
         """Custom unpickle support."""
         self.__dict__.update(state)
-        self.channel = None  # Will be set up by the process runner
+        self.channel = None

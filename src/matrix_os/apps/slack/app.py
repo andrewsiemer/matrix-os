@@ -13,9 +13,9 @@ from typing import Optional
 
 from PIL import Image, ImageDraw
 
-from .base import BaseApp, AppManifest, Capability
-from .fonts import get_font
-from ..core.display import FrameBuffer
+from ...core.display import FrameBuffer
+from ..base import AppManifest, BaseApp
+from ..fonts import get_font
 
 log = logging.getLogger(__name__)
 
@@ -30,7 +30,6 @@ class SlackStatusApp(BaseApp):
             version="1.0.0",
             description="Display Slack status",
             framerate=10,  # Higher for scrolling text
-            capabilities={Capability.NETWORK},
         )
 
     def __init__(self, *args, **kwargs):
@@ -68,6 +67,7 @@ class SlackStatusApp(BaseApp):
 
     def _fetch_status(self) -> None:
         """Fetch Slack status in background."""
+
         def fetch():
             try:
                 import requests
@@ -83,40 +83,48 @@ class SlackStatusApp(BaseApp):
 
                 profile = data["profile"]
 
-                with self._data_lock:
-                    if profile.get("status_text"):
-                        self._status = profile["status_text"]
-                        self._active = True
+                # Fetch all data BEFORE acquiring lock to avoid blocking render
+                if profile.get("status_text"):
+                    status = profile["status_text"]
+                    active = True
 
-                        # Remove excluded suffixes
-                        for suffix in self._exclude:
-                            self._status = self._status.replace(suffix, "")
+                    # Remove excluded suffixes
+                    for suffix in self._exclude:
+                        status = status.replace(suffix, "")
 
-                        self._expiration = profile.get("status_expiration", 0)
+                    expiration = profile.get("status_expiration", 0)
 
-                        # Get status emoji icon
-                        if profile.get("status_emoji_display_info"):
-                            icon_url = profile["status_emoji_display_info"][0]["display_url"]
-                            icon_response = requests.get(icon_url, timeout=7)
-                            icon_img = Image.open(io.BytesIO(icon_response.content))
-                            icon_img.thumbnail((12, 12))
-                            self._icon = icon_img.convert("RGB")
-                    else:
-                        self._active = False
-                        self._status = "Available"
-                        self._expiration = 0
-
-                        # Default checkmark icon
-                        default_url = "https://a.slack-edge.com/production-standard-emoji-assets/14.0/apple-large/2714-fe0f.png"
-                        icon_response = requests.get(default_url, timeout=7)
+                    # Get status emoji icon (outside lock!)
+                    icon = None
+                    if profile.get("status_emoji_display_info"):
+                        icon_url = profile["status_emoji_display_info"][0]["display_url"]
+                        icon_response = requests.get(icon_url, timeout=7)
                         icon_img = Image.open(io.BytesIO(icon_response.content))
                         icon_img.thumbnail((12, 12))
-                        self._icon = icon_img.convert("RGB")
+                        icon = icon_img.convert("RGB")
+                else:
+                    active = False
+                    status = "Available"
+                    expiration = 0
 
+                    # Default checkmark icon (outside lock!)
+                    default_url = "https://a.slack-edge.com/production-standard-emoji-assets/14.0/apple-large/2714-fe0f.png"
+                    icon_response = requests.get(default_url, timeout=7)
+                    icon_img = Image.open(io.BytesIO(icon_response.content))
+                    icon_img.thumbnail((12, 12))
+                    icon = icon_img.convert("RGB")
+
+                # Only hold lock briefly to update shared state
+                with self._data_lock:
+                    self._status = status
+                    self._active = active
+                    self._expiration = expiration
+                    if icon:
+                        self._icon = icon
                     self._last_update = time.time()
 
             except Exception as e:
-                log.warning(f"Slack status fetch failed: {e}")
+                log.warning("Slack status fetch failed: %s", e)
 
         thread = threading.Thread(target=fetch, daemon=True)
         thread.start()

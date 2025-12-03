@@ -6,7 +6,7 @@ from .config import SystemConfig
 from .display import Display, FrameBuffer
 from .ipc import Message, MessageBus, MessageType
 from .kernel import Kernel
-from .sandbox import ExecutionMode, Sandbox
+from .sandbox import Sandbox
 from .scheduler import AppScheduler
 
 __all__ = [
@@ -17,7 +17,6 @@ __all__ = [
     "Message",
     "MessageType",
     "Sandbox",
-    "ExecutionMode",
     "AppScheduler",
     "SystemConfig",
 ]

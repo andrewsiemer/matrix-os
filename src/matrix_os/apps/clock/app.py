@@ -11,9 +11,9 @@ from typing import Optional
 
 from PIL import Image, ImageDraw
 
-from .base import BaseApp, AppManifest, Capability
-from .fonts import get_font
-from ..core.display import FrameBuffer
+from ...core.display import FrameBuffer
+from ..base import AppManifest, BaseApp
+from ..fonts import get_font
 
 
 class BasicClockApp(BaseApp):
@@ -26,7 +26,6 @@ class BasicClockApp(BaseApp):
             version="1.0.0",
             description="Simple digital clock",
             framerate=1,
-            capabilities={Capability.SYSTEM_INFO},
         )
 
     def __init__(self, *args, **kwargs):
@@ -87,7 +86,6 @@ class BinaryClockApp(BaseApp):
             version="1.0.0",
             description="Binary representation of time",
             framerate=1,
-            capabilities={Capability.SYSTEM_INFO},
         )
 
     def __init__(self, *args, **kwargs):
@@ -119,7 +117,7 @@ class BinaryClockApp(BaseApp):
         seconds = int(delta.total_seconds())
 
         # Convert to 16-bit binary
-        binary = format(seconds, '016b')
+        binary = format(seconds, "016b")
 
         # Layout settings
         start_x = 17
@@ -129,7 +127,7 @@ class BinaryClockApp(BaseApp):
 
         # Draw each bit
         for bit_idx, bit in enumerate(binary):
-            if bit == '1':
+            if bit == "1":
                 x = start_x + (bit_idx % 4) * interval
                 y = start_y + (bit_idx // 4) * interval
                 color = (

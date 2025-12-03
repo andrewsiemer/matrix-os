@@ -9,9 +9,9 @@ from typing import Optional
 
 from PIL import Image, ImageDraw
 
-from .base import BaseApp, AppManifest, Capability
-from .fonts import get_font
-from ..core.display import FrameBuffer
+from ...core.display import FrameBuffer
+from ..base import AppManifest, BaseApp
+from ..fonts import get_font
 
 
 class WelcomeApp(BaseApp):
@@ -24,7 +24,6 @@ class WelcomeApp(BaseApp):
             version="1.0.0",
             description="Boot welcome animation",
             framerate=60,  # High FPS for smooth animation
-            capabilities={Capability.SYSTEM_INFO},
         )
 
     def __init__(self, *args, **kwargs):
