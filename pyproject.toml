@@ -1,11 +1,10 @@
 [project]
 name = "matrix-os"
-version = "0.1.0"
-description = "RGB Matrix display applications for Raspberry Pi"
+version = "1.0.0"
+description = "A modular LED matrix display system with sandboxed apps"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
-    "schedule>=1.2.0",
     "requests>=2.31.0",
     "APScheduler>=3.10.0",
     "pytz>=2024.1",
@@ -16,9 +15,31 @@ dependencies = [
     "pydantic-settings>=2.0.0"
 ]
 
+    [project.scripts]
+    matrix-os = "matrix_os.main:main"
+
+    [project.optional-dependencies]
+    dev = [
+        "pytest>=7.0.0",
+        "pytest-cov>=4.0.0",
+        "black>=23.0.0",
+        "ruff>=0.1.0"
+    ]
+
 [build-system]
 requires = [ "uv_build>=0.5.15" ]
 build-backend = "uv_build"
 
 [tool.uv]
 find-links = [ "./vendor" ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+    [tool.ruff.lint]
+    select = [ "E", "F", "W", "I" ]
+
+[tool.black]
+line-length = 100
+target-version = [ "py39" ]

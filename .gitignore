@@ -1,6 +1,7 @@
 *.txt
 *.json
 *.env
+*.DS_Store
 
 # uv / Python
 .venv/
