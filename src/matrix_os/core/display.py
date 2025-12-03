@@ -5,6 +5,7 @@ Provides a hardware-agnostic interface for rendering to the LED matrix.
 """
 
 import logging
+import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional, Tuple
 
@@ -139,6 +140,11 @@ class Display:
 
     def initialize(self) -> bool:
         """Initialize the hardware display."""
+        if sys.platform != "linux":
+            log.warning("rgbmatrix only available on Linux - running in simulation mode")
+            self._initialized = True
+            return True
+
         try:
             from rgbmatrix import RGBMatrix, RGBMatrixOptions
 

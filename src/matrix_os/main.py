@@ -35,14 +35,7 @@ log = logging.getLogger("matrix_os")
 def main():
     """Main entry point."""
     # Import apps from their folders
-    from matrix_os.apps.clock import BasicClockApp, BinaryClockApp
-    from matrix_os.apps.dvd import DVDApp
-    from matrix_os.apps.earth import EarthApp
-    from matrix_os.apps.imageviewer import ImageViewerApp
-    from matrix_os.apps.slack import SlackStatusApp
     from matrix_os.apps.stocks import StocksApp
-    from matrix_os.apps.weather import WeatherApp
-    from matrix_os.apps.welcome import WelcomeApp
     from matrix_os.core import Kernel, SystemConfig
 
     log.info("=" * 50)
