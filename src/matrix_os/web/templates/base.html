@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}MatrixOS{% endblock %}</title>
+    <link href="/static/css/base.css" rel="stylesheet">
+    {% block extra_css %}{% endblock %}
+    <!-- Load fonts asynchronously (won't block page render) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet"
+        media="print" onload="this.media='all'">
+</head>
+
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <a class="navbar-brand" href="/">MatrixOS</a>
+            <div class="nav-links">
+                <a class="nav-link {% if active_page == 'display' %}active{% endif %}" href="/">Display</a>
+                <a class="nav-link {% if active_page == 'logs' %}active{% endif %}" href="/logs">Logs</a>
+            </div>
+        </div>
+    </nav>
+    <div class="main-content">{% block content %}{% endblock %}</div>
+    <footer>Created by Andrew Siemer</footer>
+    {% block scripts %}{% endblock %}
+</body>
+
+</html>

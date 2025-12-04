@@ -5,6 +5,7 @@ All apps run in separate processes for true isolation from the render loop.
 """
 
 import logging
+import logging.handlers
 import multiprocessing
 import threading
 from typing import TYPE_CHECKING, Dict, Optional
@@ -15,8 +16,36 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# Shared queue for forwarding logs from child processes to main process
+_log_queue: Optional[multiprocessing.Queue] = None
 
-def _process_run_loop(app: "BaseApp", send_queue, recv_queue, app_id: str) -> None:
+
+def set_log_queue(queue: multiprocessing.Queue) -> None:
+    """Set the log queue for child processes to use."""
+    global _log_queue
+    _log_queue = queue
+
+
+def get_log_queue() -> Optional[multiprocessing.Queue]:
+    """Get the log queue."""
+    return _log_queue
+
+
+def _setup_child_logging(log_queue: multiprocessing.Queue) -> None:
+    """Set up logging in child process to forward to main process."""
+    # Remove all existing handlers from root logger
+    root = logging.getLogger()
+    for handler in root.handlers[:]:
+        root.removeHandler(handler)
+
+    # Add queue handler to forward logs to main process
+    queue_handler = logging.handlers.QueueHandler(log_queue)
+    queue_handler.setLevel(logging.INFO)
+    root.addHandler(queue_handler)
+    root.setLevel(logging.INFO)
+
+
+def _process_run_loop(app: "BaseApp", send_queue, recv_queue, app_id: str, log_queue) -> None:
     """
     Run loop for apps. Runs in a separate process.
     """
@@ -24,6 +53,10 @@ def _process_run_loop(app: "BaseApp", send_queue, recv_queue, app_id: str) -> No
     from queue import Empty
 
     from .ipc import Message, MessageType
+
+    # Set up logging to forward to main process
+    if log_queue:
+        _setup_child_logging(log_queue)
 
     running = True
     paused = False
@@ -118,6 +151,7 @@ class AppWrapper:
                 self.channel.send_queue,
                 self.channel.recv_queue,
                 self.channel.app_id,
+                get_log_queue(),
             ),
             name=f"matrixos-{self.app.manifest.name}",
             daemon=True,

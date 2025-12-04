@@ -8,12 +8,27 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
-# Default database location
-DEFAULT_DB_PATH = "/tmp/matrixos_stocks.db"
+
+def _get_data_dir() -> Path:
+    """Get the data directory path, creating it if needed."""
+    # Find project root (where data/ should be)
+    # Go up from: src/matrix_os/apps/stocks/db.py -> project root
+    current = Path(__file__).resolve()
+    project_root = current.parent.parent.parent.parent.parent
+
+    data_dir = project_root / "data"
+    data_dir.mkdir(exist_ok=True)
+    return data_dir
+
+
+def get_db_path() -> str:
+    """Get the path to the stocks database."""
+    return str(_get_data_dir() / "stocks.db")
 
 
 @dataclass
@@ -34,8 +49,8 @@ class StockData:
 class StockCache:
     """SQLite-based cache for stock data."""
 
-    def __init__(self, db_path: str = DEFAULT_DB_PATH):
-        self.db_path = db_path
+    def __init__(self, db_path: str = None):
+        self.db_path = db_path or get_db_path()
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
@@ -45,8 +60,7 @@ class StockCache:
     def _init_db(self) -> None:
         """Initialize database schema."""
         with self._get_connection() as conn:
-            # Drop old table if schema changed
-            conn.execute("DROP TABLE IF EXISTS stocks")
+            # Create table if not exists (don't drop - we want to keep data!)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS stocks (

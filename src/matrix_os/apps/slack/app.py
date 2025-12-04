@@ -58,6 +58,18 @@ class SlackStatusApp(BaseApp):
 
         self._font = None
 
+    def __getstate__(self):
+        """Custom pickle support - exclude unpicklable objects."""
+        state = super().__getstate__()
+        if "_data_lock" in state:
+            del state["_data_lock"]
+        return state
+
+    def __setstate__(self, state):
+        """Custom unpickle support - restore locks."""
+        super().__setstate__(state)
+        self._data_lock = threading.Lock()
+
     def on_start(self) -> None:
         """Initialize."""
         font_path = self.get_font_path("5x6.bdf")

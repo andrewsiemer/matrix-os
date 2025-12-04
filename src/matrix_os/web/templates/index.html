@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block title %}MatrixOS - Display{% endblock %}
+
+{% block extra_css %}
+<link href="/static/css/display.css" rel="stylesheet">
+{% endblock %}
+
+{% block content %}
+<div class="display-wrapper">
+    <div class="display-card">
+        <div class="display-header">
+            <div class="live-indicator">
+                <span class="dot"></span>
+                <span>Live Feed</span>
+            </div>
+        </div>
+        <div class="display-body">
+            <img id="matrix-display" alt="Matrix Display" width="{{ display_width }}" height="{{ display_height }}">
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Load stream with cache-busting timestamp
+    document.getElementById('matrix-display').src = '/stream?t=' + Date.now();
+</script>
+{% endblock %}

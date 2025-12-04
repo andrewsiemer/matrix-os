@@ -9,7 +9,7 @@ import logging
 import os
 import threading
 import time
-from typing import TYPE_CHECKING, Dict, Optional, Type
+from typing import TYPE_CHECKING, Callable, Dict, Optional, Type
 
 from .config import SystemConfig
 from .display import Display, FrameBuffer
@@ -21,6 +21,22 @@ if TYPE_CHECKING:
     from ..apps.base import BaseApp
 
 log = logging.getLogger(__name__)
+
+# Optional callback for frame updates (used by web interface)
+_frame_callback: Optional[Callable[[FrameBuffer], None]] = None
+_app_change_callback: Optional[Callable[[str], None]] = None
+
+
+def set_frame_callback(callback: Optional[Callable[[FrameBuffer], None]]) -> None:
+    """Set a callback to receive frame updates."""
+    global _frame_callback
+    _frame_callback = callback
+
+
+def set_app_change_callback(callback: Optional[Callable[[str], None]]) -> None:
+    """Set a callback to receive app change notifications."""
+    global _app_change_callback
+    _app_change_callback = callback
 
 
 class Kernel:
@@ -65,6 +81,15 @@ class Kernel:
     @property
     def images_path(self) -> str:
         return os.path.abspath(self._images_path)
+
+    @property
+    def app_instances(self) -> Dict[str, "BaseApp"]:
+        """Get all registered app instances."""
+        return self._app_instances
+
+    def get_current_app_id(self) -> Optional[str]:
+        """Get the currently active app ID."""
+        return self.scheduler.get_current_app()
 
     def create_framebuffer(self) -> FrameBuffer:
         """Create a framebuffer for apps to render to."""
@@ -116,6 +141,14 @@ class Kernel:
         )
 
         log.info(f"Registered app '{app_id}' ({app.manifest.name} v{app.manifest.version})")
+
+        # Notify web interface about the new app
+        if _app_change_callback:
+            try:
+                _app_change_callback(app_id)
+            except Exception:
+                pass
+
         return app_id
 
     def unregister_app(self, app_id: str) -> bool:
@@ -176,6 +209,13 @@ class Kernel:
             if frame:
                 self.display.render(frame)
 
+                # Notify web interface if callback is set
+                if _frame_callback:
+                    try:
+                        _frame_callback(frame)
+                    except Exception:
+                        pass  # Don't let web callback errors affect rendering
+
             # Frame timing - sleep for remainder of frame time
             elapsed = time.time() - loop_start
             sleep_time = frame_time - elapsed
@@ -209,7 +249,7 @@ class Kernel:
         log.info("MatrixOS kernel started")
 
     def run(self) -> None:
-        """Start and run until interrupted."""
+        """Start and run until interrupted. Let KeyboardInterrupt propagate to caller."""
         self.start()
 
         try:

@@ -5,7 +5,7 @@ MatrixOS Core - System kernel, display management, IPC, and sandboxing.
 from .config import SystemConfig
 from .display import Display, FrameBuffer
 from .ipc import Message, MessageBus, MessageType
-from .kernel import Kernel
+from .kernel import Kernel, set_app_change_callback, set_frame_callback
 from .sandbox import Sandbox
 from .scheduler import AppScheduler
 
@@ -19,4 +19,6 @@ __all__ = [
     "Sandbox",
     "AppScheduler",
     "SystemConfig",
+    "set_frame_callback",
+    "set_app_change_callback",
 ]

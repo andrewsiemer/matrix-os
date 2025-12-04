@@ -21,13 +21,15 @@ from .db import StockCache, StockData
 
 log = logging.getLogger(__name__)
 
+# Module-level storage for shared state (avoids pickle issues with class-level locks)
+_stocks_cache: Optional[StockCache] = None
+_stocks_cache_lock = threading.Lock()
+_stocks_rate_limited_until: float = 0
+_stocks_rate_limit_lock = threading.Lock()
+
 
 class StocksApp(BaseApp):
     """Stock price and chart display."""
-
-    # Shared cache across all StocksApp instances
-    _cache: Optional[StockCache] = None
-    _cache_lock = threading.Lock()
 
     @classmethod
     def get_manifest(cls) -> AppManifest:
@@ -41,10 +43,25 @@ class StocksApp(BaseApp):
     @classmethod
     def _get_cache(cls) -> StockCache:
         """Get or create the shared cache."""
-        with cls._cache_lock:
-            if cls._cache is None:
-                cls._cache = StockCache()
-            return cls._cache
+        global _stocks_cache
+        with _stocks_cache_lock:
+            if _stocks_cache is None:
+                _stocks_cache = StockCache()
+            return _stocks_cache
+
+    @classmethod
+    def _is_rate_limited(cls) -> bool:
+        """Check if we're currently rate limited."""
+        with _stocks_rate_limit_lock:
+            return time.time() < _stocks_rate_limited_until
+
+    @classmethod
+    def _set_rate_limited(cls, seconds: int = 60):
+        """Set rate limit for specified seconds."""
+        global _stocks_rate_limited_until
+        with _stocks_rate_limit_lock:
+            _stocks_rate_limited_until = time.time() + seconds
+            log.warning("Rate limited - pausing API calls for %d seconds", seconds)
 
     def __init__(self, *args, symbol: str = "NVDA", **kwargs):
         super().__init__(*args, **kwargs)
@@ -63,18 +80,34 @@ class StocksApp(BaseApp):
 
         # State
         self._last_update = 0
-        self._update_interval = 5 * 60  # 5 minutes to avoid API rate limits
+        self._update_interval = 5 * 60  # 5 minutes
         self._is_fetching = False
         self._data_lock = threading.Lock()
         self._font = None
+        self._has_todays_data = False
+
+    def __getstate__(self):
+        """Custom pickle support - exclude unpicklable objects."""
+        state = super().__getstate__()
+        if "_data_lock" in state:
+            del state["_data_lock"]
+        return state
+
+    def __setstate__(self, state):
+        """Custom unpickle support - restore locks."""
+        super().__setstate__(state)
+        self._data_lock = threading.Lock()
 
     def on_start(self) -> None:
         """Initialize and load cached data."""
-        # Load font
         font_path = self.get_font_path("5x6.bdf")
         self._font = get_font(font_path)
 
-        # Try to load cached data first
+        # Get today's trading day
+        trading_day = self._get_trading_day()
+        trading_day_str = trading_day.strftime("%Y-%m-%d")
+
+        # Try to load cached data
         cache = self._get_cache()
         cached = cache.get(self._symbol)
 
@@ -88,10 +121,27 @@ class StocksApp(BaseApp):
                 self._inflection_pt = cached.inflection_pt
                 self._last_update = cached.updated
 
-            log.info("Loaded cached data for %s: $%.2f", self._symbol, cached.current_price)
+            log.info(
+                "Loaded cached data for %s: $%.2f (from %s)",
+                self._symbol,
+                cached.current_price,
+                cached.trading_day,
+            )
 
-            # If cache is stale, schedule a refresh
-            if cache.is_stale(self._symbol, self._update_interval):
+            # Check if this is today's data
+            if cached.trading_day == trading_day_str:
+                self._has_todays_data = True
+                # Only refresh if data is stale (older than update interval)
+                if cache.is_stale(self._symbol, self._update_interval):
+                    log.info("Cache is stale, will refresh %s", self._symbol)
+                    self._last_update = time.time() - self._update_interval + 5
+                else:
+                    log.info("Using fresh cached data for %s", self._symbol)
+            else:
+                # Different trading day - need fresh data
+                log.info(
+                    "Cache is from %s, need fresh data for %s", cached.trading_day, trading_day_str
+                )
                 self._last_update = time.time() - self._update_interval + 5
         else:
             # No cache - fetch soon
@@ -102,7 +152,6 @@ class StocksApp(BaseApp):
         eastern = zoneinfo.ZoneInfo("America/New_York")
         now = datetime.now(eastern)
 
-        # Market opens at 9:30 AM ET
         market_open_hour = 9
         market_open_min = 30
 
@@ -110,7 +159,6 @@ class StocksApp(BaseApp):
         if (now.hour * 60 + now.minute) < (market_open_hour * 60 + market_open_min):
             now = now - timedelta(days=1)
 
-        # Set to market open time
         trading_day = now.replace(
             hour=market_open_hour,
             minute=market_open_min,
@@ -118,7 +166,7 @@ class StocksApp(BaseApp):
             microsecond=0,
         )
 
-        # Skip weekends (Saturday=5, Sunday=6)
+        # Skip weekends
         while trading_day.weekday() > 4:
             trading_day -= timedelta(days=1)
 
@@ -128,19 +176,24 @@ class StocksApp(BaseApp):
         """Fetch stock data in background."""
         if self._is_fetching:
             return
+
+        # Check rate limit - skip silently and update last_update to prevent spam
+        if self._is_rate_limited():
+            self._last_update = time.time()
+            return
+
         self._is_fetching = True
 
         def fetch():
             try:
-                from twelvedata import TDClient
+                from twelvedata import TDClient, exceptions
 
                 td = TDClient(apikey=self._api_key)
 
-                # Get trading day (market open time)
                 trading_day = self._get_trading_day()
                 trading_day_end = trading_day + timedelta(minutes=390)
 
-                # Get intraday data for today only
+                # Get intraday data
                 ts = td.time_series(
                     symbol=self._symbol,
                     interval="1min",
@@ -150,7 +203,19 @@ class StocksApp(BaseApp):
                     timezone=self._timezone,
                 )
 
-                data = ts.as_json()
+                try:
+                    data = ts.as_json()
+                except exceptions.TwelveDataError as e:
+                    error_msg = str(e).lower()
+                    if "run out of api credits" in error_msg:
+                        # Daily limit hit - wait 1 hour before retrying
+                        self._set_rate_limited(3600)
+                    elif "api credits" in error_msg or "rate" in error_msg:
+                        # Rate limit hit - wait until next minute
+                        seconds_to_wait = 61 - datetime.now().second
+                        self._set_rate_limited(seconds_to_wait)
+                    raise
+
                 if not data:
                     return
 
@@ -169,7 +234,19 @@ class StocksApp(BaseApp):
                     outputsize=1,
                     timezone=self._timezone,
                 )
-                daily_data = ts_daily.as_json()
+
+                try:
+                    daily_data = ts_daily.as_json()
+                except exceptions.TwelveDataError as e:
+                    error_msg = str(e).lower()
+                    if "run out of api credits" in error_msg:
+                        # Daily limit hit - wait 1 hour before retrying
+                        self._set_rate_limited(3600)
+                    elif "api credits" in error_msg or "rate" in error_msg:
+                        # Rate limit hit - wait until next minute
+                        seconds_to_wait = 61 - datetime.now().second
+                        self._set_rate_limited(seconds_to_wait)
+                    raise
 
                 if daily_data and len(daily_data) > 0:
                     close = float(daily_data[0]["close"])
@@ -179,7 +256,6 @@ class StocksApp(BaseApp):
                 diff = current - close
                 percent = (diff / close) * 100 if close else 0
 
-                # Build graph data
                 graph_result = self._build_graph(data, close, trading_day)
                 graph_values = graph_result["values"]
                 inflection_pt = graph_result["inflection_pt"]
@@ -187,7 +263,6 @@ class StocksApp(BaseApp):
                 now = time.time()
                 trading_day_str = trading_day.strftime("%Y-%m-%d")
 
-                # Update local state
                 with self._data_lock:
                     self._current_price = current
                     self._close_price = close
@@ -196,8 +271,8 @@ class StocksApp(BaseApp):
                     self._graph_data = graph_values
                     self._inflection_pt = inflection_pt
                     self._last_update = now
+                    self._has_todays_data = True
 
-                # Save to cache
                 cache = self._get_cache()
                 cache.set(
                     StockData(
@@ -216,7 +291,13 @@ class StocksApp(BaseApp):
                 log.info("Stock data updated: %s = $%.2f", self._symbol, current)
 
             except Exception as e:
-                log.warning("Stock fetch failed: %s", e)
+                error_msg = str(e).lower()
+                if "run out of api credits" in error_msg:
+                    log.warning("Stock API daily limit reached - pausing for 1 hour")
+                elif "api credits" in error_msg or "rate" in error_msg:
+                    log.warning("Stock fetch rate limited: %s", e)
+                else:
+                    log.warning("Stock fetch failed: %s", e)
             finally:
                 self._is_fetching = False
 
@@ -226,23 +307,16 @@ class StocksApp(BaseApp):
     def _build_graph(
         self, data: List[Dict], close_price: float, market_open: datetime = None
     ) -> Dict:
-        """Build graph data from time series.
-
-        Uses 64 fixed timestamp positions across the trading day (like original).
-        Only draws points up to the current time during trading hours.
-        """
+        """Build graph data from time series."""
         if not data:
             return {"values": [], "inflection_pt": 0}
 
-        # Trading day is 390 minutes (6.5 hours: 9:30 AM - 4:00 PM)
-        # Create 64 evenly spaced timestamp offsets (0, 6, 12, ... 389)
         open_time = 390
         graph_width = 64
         timestamps = [
             int(round(i * (open_time - 1) / (graph_width - 1))) for i in range(graph_width)
         ]
 
-        # Use provided market_open or derive from data
         if market_open is None:
             try:
                 oldest_dt_str = data[-1]["datetime"]
@@ -251,10 +325,8 @@ class StocksApp(BaseApp):
             except (ValueError, KeyError, IndexError):
                 return {"values": [], "inflection_pt": 0}
 
-        # Build a lookup dict for quick access: datetime_str -> data point
         data_lookup = {point["datetime"]: point for point in data}
 
-        # Sample data at each of the 64 timestamp positions
         samples = []
         prev_time = market_open - timedelta(minutes=1)
 
@@ -263,7 +335,6 @@ class StocksApp(BaseApp):
             sample = None
             tries = 5
 
-            # Try to find data at or near this timestamp
             while sample is None and tries > 0 and target_time > prev_time:
                 target_str = target_time.strftime("%Y-%m-%d %H:%M:%S")
                 if target_str in data_lookup:
@@ -274,18 +345,16 @@ class StocksApp(BaseApp):
 
             if sample:
                 prev_time = target_time
-                if idx == 0:  # First data point uses open price
+                if idx == 0:
                     samples.append(float(sample["open"]))
                 else:
                     samples.append(float(sample["close"]))
             else:
-                # No data for this timestamp - we've reached the current time
                 break
 
         if not samples:
             return {"values": [], "inflection_pt": 0}
 
-        # Calculate scale for y-axis
         max_val = max(max(samples), close_price)
         min_val = min(min(samples), close_price)
 
@@ -293,8 +362,6 @@ class StocksApp(BaseApp):
         scale = height / (max_val - min_val) if max_val != min_val else 1
 
         inflection_pt = int(round((close_price - min_val) * scale))
-
-        # Create values with x positions
         values = [(x, int((s - min_val) * scale)) for x, s in enumerate(samples)]
 
         return {"values": values, "inflection_pt": inflection_pt}

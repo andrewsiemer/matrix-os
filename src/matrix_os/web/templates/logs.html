@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+
+{% block title %}MatrixOS - Logs{% endblock %}
+
+{% block extra_css %}
+<link href="/static/css/logs.css" rel="stylesheet">
+{% endblock %}
+
+{% block content %}
+<div class="logs-page">
+    <div class="logs-header">
+    <div class="status-indicator">
+        <span class="status-dot"></span>
+        <span>Streaming</span>
+    </div>
+        <div class="logs-controls">
+        <span class="log-count">Lines: <span id="line-count">0</span></span>
+            <button class="btn" onclick="clearLogs()">Clear</button>
+            <button class="btn" id="scroll-toggle" onclick="toggleAutoScroll()">Auto-scroll: ON</button>
+        </div>
+    </div>
+
+    <div class="filters">
+        <label class="filter-item">
+            <input type="checkbox" id="filter-debug" checked>
+            <span class="filter-label debug">DEBUG</span>
+        </label>
+        <label class="filter-item">
+            <input type="checkbox" id="filter-info" checked>
+            <span class="filter-label info">INFO</span>
+        </label>
+        <label class="filter-item">
+            <input type="checkbox" id="filter-warning" checked>
+            <span class="filter-label warning">WARNING</span>
+        </label>
+        <label class="filter-item">
+            <input type="checkbox" id="filter-error" checked>
+            <span class="filter-label error">ERROR</span>
+        </label>
+</div>
+
+<div class="terminal-container">
+    <div class="terminal-header">
+        <div class="terminal-dots">
+            <span class="terminal-dot red"></span>
+            <span class="terminal-dot yellow"></span>
+            <span class="terminal-dot green"></span>
+        </div>
+        <span class="terminal-title">matrixos.log</span>
+    </div>
+    <div id="log-container"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const logContainer = document.getElementById('log-container');
+    let autoScroll = true;
+    let lineCount = 0;
+
+    const filters = {
+        DEBUG: document.getElementById('filter-debug'),
+        INFO: document.getElementById('filter-info'),
+        WARNING: document.getElementById('filter-warning'),
+        ERROR: document.getElementById('filter-error')
+    };
+
+    Object.values(filters).forEach(checkbox => {
+        checkbox.addEventListener('change', applyFilters);
+    });
+
+    function applyFilters() {
+        document.querySelectorAll('.log-entry').forEach(entry => {
+            const level = entry.dataset.level;
+            const checkbox = filters[level];
+            entry.style.display = checkbox && checkbox.checked ? 'flex' : 'none';
+        });
+    }
+
+    function addLogEntry(log) {
+        const entry = document.createElement('div');
+        entry.className = 'log-entry';
+        entry.dataset.level = log.level;
+
+        const checkbox = filters[log.level];
+        if (checkbox && !checkbox.checked) {
+            entry.style.display = 'none';
+        }
+
+        entry.innerHTML = `
+            <span class="log-time">${log.time}</span>
+            <span class="log-level ${log.level}">${log.level}</span>
+            <span class="log-source">(${log.logger})</span>
+            <span class="log-message">${escapeHtml(log.message)}</span>
+        `;
+
+        logContainer.appendChild(entry);
+        lineCount++;
+        document.getElementById('line-count').textContent = lineCount;
+
+        while (logContainer.children.length > 1000) {
+            logContainer.removeChild(logContainer.firstChild);
+            lineCount--;
+        }
+
+        if (autoScroll) {
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    function clearLogs() {
+        logContainer.innerHTML = '';
+        lineCount = 0;
+        document.getElementById('line-count').textContent = '0';
+    }
+
+    function toggleAutoScroll() {
+        autoScroll = !autoScroll;
+        document.getElementById('scroll-toggle').textContent = `Auto-scroll: ${autoScroll ? 'ON' : 'OFF'}`;
+    }
+
+    const evtSource = new EventSource('/api/logs/stream');
+
+    evtSource.onmessage = (event) => {
+        const log = JSON.parse(event.data);
+        addLogEntry(log);
+    };
+
+    evtSource.onerror = (err) => {
+        console.error('SSE Error:', err);
+    };
+</script>
+{% endblock %}

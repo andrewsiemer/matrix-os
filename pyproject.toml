@@ -12,7 +12,11 @@ dependencies = [
     "twelvedata>=1.2.0",
     "rgbmatrix==0.0.1; sys_platform == 'linux'",
     "pillow>=11.3.0",
-    "pydantic-settings>=2.0.0"
+    "pydantic-settings>=2.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "sse-starlette>=2.1.0",
+    "jinja2>=3.1.0"
 ]
 
     [project.scripts]

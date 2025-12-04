@@ -46,6 +46,18 @@ class WeatherApp(BaseApp):
         self._font = None
         self._update_lock = threading.Lock()
 
+    def __getstate__(self):
+        """Custom pickle support - exclude unpicklable objects."""
+        state = super().__getstate__()
+        if "_update_lock" in state:
+            del state["_update_lock"]
+        return state
+
+    def __setstate__(self, state):
+        """Custom unpickle support - restore locks."""
+        super().__setstate__(state)
+        self._update_lock = threading.Lock()
+
     def on_start(self) -> None:
         """Initialize and fetch initial weather."""
         font_path = self.get_font_path("5x6.bdf")
