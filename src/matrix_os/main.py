@@ -15,9 +15,12 @@ from multiple sandboxed apps.
 
 import argparse
 import logging
+import os
 import threading
 
+from matrix_os.apps import BasicClockApp, DVDApp, EarthApp, ImageViewerApp, SlackStatusApp
 from matrix_os.apps.stocks import StocksApp
+from matrix_os.apps.weather import WeatherApp
 from matrix_os.core import Kernel, SystemConfig
 
 # Setup logging
@@ -199,20 +202,18 @@ def main():
     # Each app runs in its own process and communicates with the kernel via IPC
 
     # Fun/visual apps
-    # kernel.register_app(DVDApp, duration=15)
-    # kernel.register_app(EarthApp, duration=15)
+    kernel.register_app(DVDApp, duration=15)
+    kernel.register_app(EarthApp, duration=15)
     kernel.register_app(StocksApp, symbol="NVDA", duration=15)
     kernel.register_app(StocksApp, symbol="VTI", duration=15)
-    # kernel.register_app(WeatherApp, duration=15)
-    # kernel.register_app(SlackStatusApp, duration=15)
-    # kernel.register_app(WelcomeApp, duration=15)
-    # kernel.register_app(BasicClockApp, duration=15)
+    kernel.register_app(WeatherApp, duration=15)
+    kernel.register_app(SlackStatusApp, duration=15)
+    kernel.register_app(BasicClockApp, duration=15)
     # kernel.register_app(BinaryClockApp, duration=15)
 
     # Static image
-    # nvidia_path = os.path.join(kernel.images_path, "nvidia.png")
-    # if os.path.exists(nvidia_path):
-    #     kernel.register_app(ImageViewerApp, image_path=nvidia_path, duration=10)
+    if os.path.exists(nvidia_path := os.path.join(kernel.images_path, "nvidia.png")):
+        kernel.register_app(ImageViewerApp, image_path=nvidia_path, duration=10)
 
     log.info("All apps registered. Starting kernel...")
 

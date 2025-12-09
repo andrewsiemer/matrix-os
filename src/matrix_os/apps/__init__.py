@@ -14,7 +14,6 @@ from .imageviewer import ImageViewerApp
 from .slack import SlackStatusApp
 from .stocks import StocksApp
 from .weather import WeatherApp
-from .welcome import WelcomeApp
 
 __all__ = [
     # Base
@@ -29,5 +28,4 @@ __all__ = [
     "SlackStatusApp",
     "StocksApp",
     "WeatherApp",
-    "WelcomeApp",
 ]
