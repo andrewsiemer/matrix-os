@@ -1,14 +1,18 @@
 # MatrixOS
 
-A modular LED matrix display system with process-isolated apps for Raspberry Pi.
+A personal LED matrix display system with process-isolated apps.
+
+![Web UI Demo](images/web-ui-demo.png)
+
+> **Note**: This is a personal project running on a Raspberry Pi with an [Adafruit RGB Matrix Bonnet](https://learn.adafruit.com/adafruit-rgb-matrix-bonnet-for-raspberry-pi) and a 64x32 LED panel. It is not actively maintained.
 
 ## Features
 
 - **Process Isolation**: Each app runs in its own process—crashes don't affect the system
 - **Non-blocking Rendering**: Main loop never blocks, even with slow API calls
-- **Web Interface**: Real-time display simulation, log streaming, and app monitoring
+- **Web Interface**: Real-time MJPEG display stream, log viewer, and app monitoring
 - **Hot Swappable Apps**: Register apps dynamically with configurable durations
-- **Hardware Abstraction**: Runs on real LED matrices or in simulation mode
+- **Hardware Abstraction**: Runs on real LED matrices or in simulation mode (without hardware)
 
 ## Architecture
 
@@ -58,9 +62,11 @@ src/matrix_os/
 
 ## Installation
 
+This project uses a pre-built Python wheel for [rgbmatrix](https://github.com/andrewsiemer/rpi-rgb-led-matrix) (located in `vendor/`) to simplify installation of the [Adafruit RGB Matrix library](https://learn.adafruit.com/32x16-32x32-rgb-led-matrix/library) bindings.
+
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/matrix-os.git
+git clone https://github.com/andrewsiemer/matrix-os.git
 cd matrix-os
 
 # Install with uv (recommended)
@@ -69,6 +75,8 @@ uv sync
 # Or with pip
 pip install -e .
 ```
+
+> **Note**: The `rgbmatrix` wheel is built for `linux_armv7l` (Raspberry Pi). On other platforms (macOS, x86 Linux), the wheel won't install but MatrixOS will run in simulation mode.
 
 ## Configuration
 
@@ -109,13 +117,13 @@ matrix-os --port 8080
 
 ### Web Interface
 
-The web interface starts automatically at `http://localhost:8000` and provides:
+The web interface starts automatically at `http://localhost:8000` and is **always available**—whether running on actual hardware or in simulation mode. It provides:
 
-- **Live Display**: Real-time MJPEG stream of the matrix display
+- **Live Display**: Real-time MJPEG stream of the matrix display (same output as the physical LEDs)
 - **Log Viewer**: SSE-based log streaming with filtering
 - **App Status**: Currently running apps and their information
 
-This is useful for development without hardware, or for remote monitoring.
+Use it for remote monitoring of your display, or for development without hardware.
 
 ## Key Design Principles
 
@@ -408,19 +416,29 @@ api_key = self.get_env("api_key", default="")
 
 ## Hardware
 
-This project is designed for LED matrix displays using the [rpi-rgb-led-matrix](https://github.com/hzeller/rpi-rgb-led-matrix) library. Default configuration:
+This project is designed for LED matrix displays using the [rpi-rgb-led-matrix](https://github.com/hzeller/rpi-rgb-led-matrix) library. The Python bindings (`rgbmatrix`) are provided via a [fork](https://github.com/andrewsiemer/rpi-rgb-led-matrix) with a pre-built wheel for easier installation.
 
-- **Hardware mapping**: `adafruit-hat-pwm`
-- **Matrix size**: 64x32 pixels
-- **Chain length**: 1
-- **Brightness**: 100%
-- **GPIO slowdown**: 4
+### My Setup
 
-Modify `core/config.py` to adjust hardware settings.
+- **Raspberry Pi** (any model with GPIO header)
+- **[Adafruit RGB Matrix Bonnet](https://www.adafruit.com/product/3211)** (or HAT)
+- **64x32 RGB LED Matrix Panel** (HUB75 interface)
+
+### Default Configuration
+
+| Setting          | Value              |
+| ---------------- | ------------------ |
+| Hardware mapping | `adafruit-hat-pwm` |
+| Matrix size      | 64x32 pixels       |
+| Chain length     | 1                  |
+| Brightness       | 100%               |
+| GPIO slowdown    | 4                  |
+
+Modify `core/config.py` to adjust hardware settings for your setup.
 
 ### Simulation Mode
 
-When running without hardware (e.g., on macOS or without root), MatrixOS automatically runs in simulation mode. Use the web interface at `http://localhost:8000` to view the display.
+When running without hardware (e.g., on macOS or without root), MatrixOS automatically runs in simulation mode. The web interface at `http://localhost:8000` shows exactly what would appear on the physical display.
 
 ## Development
 
@@ -438,6 +456,15 @@ uv run ruff check . --fix
 uv run black .
 ```
 
+## Credits
+
+- [rpi-rgb-led-matrix](https://github.com/hzeller/rpi-rgb-led-matrix) by Henner Zeller — the core C++ library for driving RGB LED matrices
+- [Adafruit](https://learn.adafruit.com/32x16-32x32-rgb-led-matrix/library) — hardware and tutorials for RGB matrix projects
+
 ## License
 
 MIT License
+
+---
+
+* Created by [Andrew Siemer](https://github.com/andrewsiemer) • Not actively maintained*
