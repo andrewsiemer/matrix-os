@@ -48,7 +48,7 @@ def load_bdf_font(bdf_path: str) -> ImageFont.ImageFont:
     try:
         # If .pil version doesn't exist in cache, create it
         if not os.path.exists(pil_path):
-            log.info(f"Converting BDF font to PIL format: {bdf_path} -> {pil_path}")
+            log.info("Converting BDF font to PIL format: %s -> %s", bdf_path, pil_path)
             with open(bdf_path, "rb") as fp:
                 p = BdfFontFile.BdfFontFile(fp)
                 p.save(pil_path)
@@ -58,25 +58,18 @@ def load_bdf_font(bdf_path: str) -> ImageFont.ImageFont:
         return font
 
     except Exception as e:
-        log.warning(f"Failed to load BDF font {bdf_path}: {e}")
+        log.warning("Failed to load BDF font %s: %s", bdf_path, e)
         raise
 
 
-def get_font(font_path: str, fallback_to_default: bool = True) -> ImageFont.ImageFont:
+def get_font(font_path: str) -> ImageFont.ImageFont:
     """
-    Load a font, with optional fallback to PIL default.
+    Load a font from a BDF file.
 
     Args:
         font_path: Path to BDF font file
-        fallback_to_default: If True, return PIL default font on error
 
     Returns:
-        Loaded font
+        Loaded font object
     """
-    try:
-        return load_bdf_font(font_path)
-    except Exception:
-        if fallback_to_default:
-            log.warning("Using default font as fallback")
-            return ImageFont.load_default()
-        raise
+    return load_bdf_font(font_path)

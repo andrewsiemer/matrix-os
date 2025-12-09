@@ -57,20 +57,34 @@ class BasicClockApp(BaseApp):
         img = Image.new("RGB", (self.width, self.height), (0, 0, 0))
         draw = ImageDraw.Draw(img)
 
-        # Format time string
-        if self._blink:
-            time_str = f"{hour}:{minute} {ampm}"
-        else:
-            time_str = f"{hour} {minute} {ampm}"
-
-        # Center text
-        bbox = draw.textbbox((0, 0), time_str, font=self._font)
+        # Build full time string with colon for centering calculation
+        full_time = f"{hour}:{minute} {ampm}"
+        bbox = draw.textbbox((0, 0), full_time, font=self._font)
         text_width = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
-        x = (self.width - text_width) // 2
+        base_x = (self.width - text_width) // 2
         y = (self.height - text_height) // 2
 
-        draw.text((x, y), time_str, fill=(255, 255, 255), font=self._font)
+        # Render components at fixed positions
+        # Draw hour
+        draw.text((base_x, y), hour, fill=(255, 255, 255), font=self._font)
+
+        # Calculate colon position (after hour)
+        hour_bbox = draw.textbbox((0, 0), hour, font=self._font)
+        hour_width = hour_bbox[2] - hour_bbox[0]
+        colon_x = base_x + hour_width
+
+        # Draw colon only when blinking on
+        if self._blink:
+            draw.text((colon_x, y), ":", fill=(255, 255, 255), font=self._font)
+
+        # Calculate minute position (after colon, using colon width for consistent spacing)
+        colon_bbox = draw.textbbox((0, 0), ":", font=self._font)
+        colon_width = colon_bbox[2] - colon_bbox[0]
+        minute_x = colon_x + colon_width
+
+        # Draw minute and AM/PM
+        draw.text((minute_x, y), f"{minute} {ampm}", fill=(255, 255, 255), font=self._font)
 
         self.fb.blit(img)
         return self.fb

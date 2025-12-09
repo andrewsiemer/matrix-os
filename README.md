@@ -44,14 +44,9 @@ src/matrix_os/
 │   │   ├── __init__.py
 │   │   └── app.py          # StocksApp
 │   │
-│   ├── weather/            # Weather display
-│   │   ├── __init__.py
-│   │   └── app.py          # WeatherApp
-│   │
-│   └── welcome/            # Boot animation
+│   └── weather/            # Weather display
 │       ├── __init__.py
-│       └── app.py          # WelcomeApp
-│
+│       └── app.py          # WeatherApp
 └── main.py                  # Entry point
 ```
 
