@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+
+{% block title %}MatrixOS - Settings{% endblock %}
+
+{% block extra_css %}
+<link href="/static/css/status.css" rel="stylesheet">
+{% endblock %}
+
+{% block content %}
+<div class="settings-page container">
+    <div class="status-header">
+        <div class="status-indicator">
+            <span class="status-dot"></span>
+            <span>Display Settings</span>
+        </div>
+        <span class="text-muted small" id="settings-msg"></span>
+    </div>
+
+    <div class="app-card">
+        <h2 class="section-title" style="margin-top:0">Brightness</h2>
+        <div class="app-row">
+            <input type="range" id="brightness" min="0" max="100" step="1" style="flex:1; min-width:200px">
+            <span class="tile-value" id="brightness-val" style="min-width:3ch">—</span>
+        </div>
+    </div>
+
+    <div class="app-card">
+        <h2 class="section-title" style="margin-top:0">Sleep Window</h2>
+        <p class="text-muted small" style="margin-bottom:0.75rem">
+            Turns the display off during this time period (local time).
+        </p>
+        <div class="app-row">
+            <label class="form-check">
+                <input type="checkbox" class="form-check-input" id="sleep-enabled">
+                <span class="form-check-label">Enable sleep window</span>
+            </label>
+            <label class="field">
+                <span class="field-label">Sleep at</span>
+                <input type="time" id="sleep-start">
+            </label>
+            <label class="field">
+                <span class="field-label">Wake at</span>
+                <input type="time" id="sleep-end">
+            </label>
+        </div>
+    </div>
+
+    <div class="app-actions">
+        <button class="btn" onclick="saveSettings()">Save</button>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function msg(text, isError) {
+        const el = document.getElementById('settings-msg');
+        el.textContent = text;
+        el.style.color = isError ? 'var(--accent)' : 'var(--text-secondary)';
+        if (!isError) setTimeout(() => { el.textContent = ''; }, 2500);
+    }
+
+    const brightness = document.getElementById('brightness');
+    const brightnessVal = document.getElementById('brightness-val');
+    brightness.addEventListener('input', () => {
+        brightnessVal.textContent = brightness.value + '%';
+    });
+
+    async function load() {
+        const res = await fetch('/api/settings');
+        const s = await res.json();
+        brightness.value = s.brightness;
+        brightnessVal.textContent = s.brightness + '%';
+        document.getElementById('sleep-enabled').checked = s.sleep_enabled;
+        document.getElementById('sleep-start').value = s.sleep_start;
+        document.getElementById('sleep-end').value = s.sleep_end;
+    }
+
+    async function saveSettings() {
+        const body = {
+            brightness: parseInt(brightness.value, 10),
+            sleep_enabled: document.getElementById('sleep-enabled').checked,
+            sleep_start: document.getElementById('sleep-start').value,
+            sleep_end: document.getElementById('sleep-end').value,
+        };
+        const res = await fetch('/api/settings', {
+            method: 'PATCH',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body),
+        });
+        if (res.ok) { msg('Settings saved'); load(); }
+        else { msg(`Save failed: ${(await res.json()).detail}`, true); }
+    }
+
+    load();
+</script>
+{% endblock %}

@@ -16,6 +16,7 @@ from PIL import Image, ImageDraw
 from ...core.display import FrameBuffer
 from ..base import AppManifest, BaseApp
 from ..fonts import get_font
+from ..scroll import ScrollingText
 
 log = logging.getLogger(__name__)
 
@@ -44,8 +45,8 @@ class SlackStatusApp(BaseApp):
         self._expiration = 0
         self._icon: Optional[Image.Image] = None
 
-        # Scrolling state
-        self._scroll_pos = 0
+        # Scrolling text (created in on_start once width is known)
+        self._scroller: Optional[ScrollingText] = None
         self._text_width = 0
 
         # Update settings
@@ -74,6 +75,8 @@ class SlackStatusApp(BaseApp):
         """Initialize."""
         font_path = self.get_font_path("5x6.bdf")
         self._font = get_font(font_path)
+
+        self._scroller = ScrollingText(self.width, speed=2)
 
         self._fetch_status()
 
@@ -146,16 +149,17 @@ class SlackStatusApp(BaseApp):
         with self._data_lock:
             return self._active
 
+    def wants_focus(self) -> bool:
+        """Hold the display while a Slack status is set (if persist is enabled)."""
+        return self.is_active()
+
     def update(self) -> None:
         """Update scroll position and check for refresh."""
         if time.time() - self._last_update > self._update_interval:
             self._fetch_status()
 
-        # Update scroll if text is too wide
-        if self._text_width > self.width:
-            self._scroll_pos -= 1
-            if self._scroll_pos < -self._text_width:
-                self._scroll_pos = self.width
+        if self._scroller:
+            self._scroller.tick()
 
     def render(self) -> Optional[FrameBuffer]:
         """Render Slack status."""
@@ -189,23 +193,16 @@ class SlackStatusApp(BaseApp):
                 icon_x = (self.width - 12) // 2
                 img.paste(self._icon, (icon_x, 2 + y_offset))
 
-            # Status text
+            # Status text (centered if it fits, scrolling marquee otherwise)
             if self._font:
                 bbox = draw.textbbox((0, 0), self._status, font=self._font)
                 self._text_width = bbox[2] - bbox[0]
 
-                if self._text_width > self.width:
-                    # Scrolling text
-                    draw.text(
-                        (self._scroll_pos, 16 + y_offset),
-                        self._status,
-                        fill=white,
-                        font=self._font,
-                    )
+                if self._scroller:
+                    x = self._scroller.x(self._text_width)
                 else:
-                    # Centered text
                     x = (self.width - self._text_width) // 2
-                    draw.text((x, 16 + y_offset), self._status, fill=white, font=self._font)
+                draw.text((x, 16 + y_offset), self._status, fill=white, font=self._font)
 
         self.fb.blit(img)
         return self.fb

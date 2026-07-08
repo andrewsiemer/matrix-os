@@ -1,0 +1,13 @@
+# Copy to inventory.ini and edit for your Pi.
+#
+#   cp inventory.ini.example inventory.ini
+#
+# Then run:
+#   ansible-playbook -i inventory.ini playbook.yml
+
+[pi]
+matrixpi.local ansible_user=pi
+
+[pi:vars]
+# Web UI port (systemd ExecStart uses this)
+matrix_os_port=8000

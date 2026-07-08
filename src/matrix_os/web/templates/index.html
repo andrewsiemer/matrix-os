@@ -4,6 +4,7 @@
 
 {% block extra_css %}
 <link href="/static/css/display.css" rel="stylesheet">
+<link href="/static/css/status.css" rel="stylesheet">
 {% endblock %}
 
 {% block content %}
@@ -14,11 +15,36 @@
                 <span class="dot"></span>
                 <span>Live Feed</span>
             </div>
+            <span class="badge focus" id="sleep-badge" style="display:none">Sleeping</span>
         </div>
         <div class="display-body">
             <img id="matrix-display" alt="Matrix Display" width="{{ display_width }}" height="{{ display_height }}">
         </div>
     </div>
+</div>
+
+<div class="status-section container">
+    <div class="status-grid" id="system-grid">
+        <div class="status-tile"><span class="tile-label">Uptime</span><span class="tile-value" id="stat-uptime">—</span></div>
+        <div class="status-tile"><span class="tile-label">Current App</span><span class="tile-value" id="stat-current">—</span></div>
+        <div class="status-tile"><span class="tile-label">Apps</span><span class="tile-value" id="stat-apps">—</span></div>
+        <div class="status-tile"><span class="tile-label">Brightness</span><span class="tile-value" id="stat-brightness">—</span></div>
+        <div class="status-tile"><span class="tile-label">Display</span><span class="tile-value" id="stat-display">—</span></div>
+        <div class="status-tile"><span class="tile-label">Target FPS</span><span class="tile-value" id="stat-fps">—</span></div>
+    </div>
+
+    <table class="status-table">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Type</th>
+                <th>State</th>
+                <th>Duration</th>
+                <th>Persist</th>
+            </tr>
+        </thead>
+        <tbody id="apps-body"></tbody>
+    </table>
 </div>
 {% endblock %}
 
@@ -26,5 +52,62 @@
 <script>
     // Load stream with cache-busting timestamp
     document.getElementById('matrix-display').src = '/stream?t=' + Date.now();
+
+    function fmtUptime(s) {
+        s = Math.floor(s);
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        const sec = s % 60;
+        if (h > 0) return `${h}h ${m}m ${sec}s`;
+        if (m > 0) return `${m}m ${sec}s`;
+        return `${sec}s`;
+    }
+
+    function badge(text, cls) {
+        return `<span class="badge ${cls}">${text}</span>`;
+    }
+
+    async function refreshStatus() {
+        let data;
+        try {
+            const res = await fetch('/api/status');
+            if (!res.ok) return;
+            data = await res.json();
+        } catch (e) {
+            return;
+        }
+
+        document.getElementById('stat-uptime').textContent = fmtUptime(data.uptime);
+        document.getElementById('stat-current').textContent = data.current_app || '—';
+        document.getElementById('stat-apps').textContent = `${data.running_count}/${data.app_count} running`;
+        document.getElementById('stat-brightness').textContent = data.brightness + '%';
+        document.getElementById('stat-display').textContent = `${data.display.width}×${data.display.height}`;
+        document.getElementById('stat-fps').textContent = data.target_fps;
+        document.getElementById('sleep-badge').style.display = data.sleeping ? '' : 'none';
+
+        const body = document.getElementById('apps-body');
+        body.innerHTML = '';
+        data.apps.forEach(app => {
+            const tr = document.createElement('tr');
+            let state = '';
+            if (app.current) state += badge('LIVE', 'live');
+            if (app.wants_focus) state += badge('FOCUS', 'focus');
+            if (app.running) state += badge('running', 'running');
+            else if (app.enabled) state += badge('starting', 'muted');
+            else state += badge('disabled', 'muted');
+
+            tr.innerHTML = `
+                <td>${app.name}</td>
+                <td class="text-muted">${app.type}</td>
+                <td>${state}</td>
+                <td>${app.duration}s</td>
+                <td>${app.persist ? 'yes' : 'no'}</td>
+            `;
+            body.appendChild(tr);
+        });
+    }
+
+    refreshStatus();
+    setInterval(refreshStatus, 2000);
 </script>
 {% endblock %}

@@ -54,7 +54,9 @@ class StockCache:
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
-        """Get a database connection."""
+        """Get a database connection, creating the db file if it doesn't exist."""
+        db_path = Path(self.db_path)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
         return sqlite3.connect(self.db_path)
 
     def _init_db(self) -> None:

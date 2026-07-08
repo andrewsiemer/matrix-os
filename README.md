@@ -10,7 +10,9 @@ A personal LED matrix display system with process-isolated apps.
 
 - **Process Isolation**: Each app runs in its own process—crashes don't affect the system
 - **Non-blocking Rendering**: Main loop never blocks, even with slow API calls
-- **Web Interface**: Real-time MJPEG display stream, log viewer, and app monitoring
+- **Web Interface**: Real-time MJPEG display stream, system status page, log viewer, and app monitoring
+- **Live App Configuration**: Enable/disable apps, edit durations and per-app parameters from the UI—applied live, no restart
+- **Persist / Interrupt**: Apps can grab and hold the display while active (e.g. Slack pins the display while a status is set)
 - **Hot Swappable Apps**: Register apps dynamically with configurable durations
 - **Hardware Abstraction**: Runs on real LED matrices or in simulation mode (without hardware)
 
@@ -119,11 +121,63 @@ matrix-os --port 8080
 
 The web interface starts automatically at `http://localhost:8000` and is **always available**—whether running on actual hardware or in simulation mode. It provides:
 
-- **Live Display**: Real-time MJPEG stream of the matrix display (same output as the physical LEDs)
-- **Log Viewer**: SSE-based log streaming with filtering
-- **App Status**: Currently running apps and their information
+- **Display**: Real-time MJPEG stream of the matrix display with system status below it—uptime, current app, brightness, and per-app state (running / live / focus)
+- **Apps**: Configure the app roster live—enable/disable apps, set rotation duration, toggle persist, edit app parameters, and add/remove apps
+- **Settings**: Set global matrix brightness and a nightly sleep window that blanks the display
+- **Logs**: SSE-based log streaming with filtering
 
 Use it for remote monitoring of your display, or for development without hardware.
+
+## App Configuration
+
+The app roster lives in `apps.json` at the project root (override with the
+`MATRIXOS_CONFIG` env var). It is seeded from sensible defaults on first run and
+is edited live from the **Apps** page—changes are persisted to disk and applied
+immediately by starting/stopping the affected app processes (no restart needed).
+
+Each configured app has:
+
+| Field      | Description                                                             |
+| ---------- | ----------------------------------------------------------------------- |
+| `type`     | App type from the registry (`dvd`, `stocks`, `slack`, …)                |
+| `enabled`  | Whether the app is registered and running                               |
+| `duration` | Rotation duration in seconds                                            |
+| `persist`  | If true, the app may **interrupt and hold** the display while it's active |
+| `params`   | App-specific parameters (e.g. `{"symbol": "NVDA"}` for stocks)          |
+
+Available app types and their editable parameters are defined in
+`apps/registry.py`.
+
+### Persist / Interrupt
+
+Only apps with an active/inactive state support persist — that is, apps that
+override `wants_focus()` (see `apps/base.py`). The **Apps** page shows the
+persist toggle only for those apps, and the server refuses to enable persist on
+any app that doesn't support it.
+
+While such an app returns `True` from `wants_focus()` **and** has `persist`
+enabled, the scheduler pins the display to it and suspends rotation; when it
+stops wanting focus, normal rotation resumes. The **Slack** app is the built-in
+example and enables persist by default: `wants_focus()` returns `True` only
+while a Slack status is set, so the display stays on Slack until the status
+clears — and shows nothing special (rejoins rotation) when there's no status.
+
+## Display Settings
+
+Global display settings live in `settings.json` at the project root (override
+with `MATRIXOS_SETTINGS`), edited live from the **Settings** page:
+
+- **Brightness** (0–100): applied via the panel's hardware PWM brightness; the
+  web preview is dimmed in software to match.
+- **Sleep window**: when enabled, the display is blanked (panel and web preview)
+  between the start and end times. Times are local (using `local_tz` from your
+  `.env`) and the window may cross midnight (e.g. `22:00`–`07:00`).
+
+## Deployment (Raspberry Pi)
+
+An Ansible playbook syncs this directory to the Pi's home dir, installs
+dependencies, and runs MatrixOS as a systemd service. See
+[`deploy/README.md`](deploy/README.md).
 
 ## Key Design Principles
 
@@ -374,13 +428,23 @@ class MyApp(BaseApp):
         pass
 ```
 
-Then register it in `main.py`:
+Then add it to the registry in `apps/registry.py` so it can be configured from
+the UI and seeded into `apps.json`:
 
 ```python
-from matrix_os.apps.myapp import MyApp
+from .myapp import MyApp
 
-kernel.register_app(MyApp, duration=15)
+APP_REGISTRY["myapp"] = AppSpec(
+    "myapp",
+    "My App",
+    MyApp,
+    params=[ParamSpec("greeting", "Greeting", "str", default="hi")],
+)
 ```
+
+Once registered, add an instance from the **Apps** page (or add an entry to
+`apps.json`). The kernel wires it up via `kernel.register_app(MyApp, ...)` under
+the hood.
 
 ## App Utilities
 
