@@ -153,6 +153,17 @@ class BaseApp(ABC):
         Must be implemented by subclasses.
         """
 
+    def wants_focus(self) -> bool:
+        """
+        Return ``True`` when this app should hold the display, interrupting the
+        normal carousel rotation. Whether the request is honored depends on the
+        app's ``persist`` configuration. Polled once per frame by the sandbox.
+
+        Override in apps that have an "active" state worth pinning to (e.g. a
+        Slack status that is currently set).
+        """
+        return False
+
     # Utility methods for apps
 
     def get_font_path(self, font_name: str) -> str:

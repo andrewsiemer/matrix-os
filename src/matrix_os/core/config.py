@@ -46,7 +46,10 @@ class DisplayConfig:
     show_refresh_rate: int = 0
     gpio_slowdown: int = 4
     disable_hardware_pulsing: bool = False
-    drop_privileges: bool = True
+    # Keep root after matrix init so app processes and the web server can write
+    # runtime files (apps.json, settings.json, the stocks cache). Dropping
+    # privileges makes those writes fail ("readonly database", saves ignored).
+    drop_privileges: bool = False
 
 
 @dataclass

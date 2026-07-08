@@ -1,0 +1,89 @@
+---
+# Deploy MatrixOS to a Raspberry Pi's home directory and run it as a
+# systemd service.
+#
+#   ansible-galaxy collection install ansible.posix
+#   ansible-playbook -i inventory.ini playbook.yml
+#
+- name: Deploy MatrixOS
+  hosts: pi
+  gather_facts: true
+
+  vars:
+    home_dir: "{{ ansible_facts['env']['HOME'] }}"
+    project_dir: "{{ home_dir }}/matrix-os"
+    uv_bin: "{{ home_dir }}/.local/bin/uv"
+    # matrix_os_port comes from inventory ([pi:vars]); the template defaults to 8000.
+
+  tasks:
+    - name: Sync project files to the Pi home directory
+      ansible.posix.synchronize:
+        src: "{{ playbook_dir }}/../../"
+        dest: "{{ project_dir }}/"
+        delete: false
+        rsync_opts:
+          - "--exclude=.git"
+          - "--exclude=.venv"
+          - "--exclude=__pycache__"
+          - "--exclude=*.pyc"
+          - "--exclude=node_modules"
+          - "--exclude=apps.json"      # keep the Pi's live app config
+          - "--exclude=settings.json"  # keep the Pi's display settings
+          - "--exclude=data"           # keep the Pi's caches (stocks db, etc.)
+      notify: Restart MatrixOS
+
+    - name: Check whether uv is installed
+      ansible.builtin.stat:
+        path: "{{ uv_bin }}"
+      register: uv_stat
+
+    - name: Install uv
+      ansible.builtin.shell: >
+        set -o pipefail && curl -LsSf https://astral.sh/uv/install.sh | sh
+      args:
+        executable: /bin/bash
+        creates: "{{ uv_bin }}"
+      when: not uv_stat.stat.exists
+
+    - name: Ensure the project is owned by the deploy user
+      # The service runs as root; reclaim ownership so `uv sync` (run as this
+      # user) can manage the virtualenv without hitting root-owned files.
+      become: true
+      ansible.builtin.file:
+        path: "{{ project_dir }}"
+        owner: "{{ ansible_user }}"
+        recurse: true
+
+    - name: Install Python dependencies (uv sync)
+      ansible.builtin.command:
+        cmd: "{{ uv_bin }} sync"
+        chdir: "{{ project_dir }}"
+      environment:
+        PATH: "{{ home_dir }}/.local/bin:{{ ansible_facts['env']['PATH'] }}"
+      register: uv_sync
+      changed_when: "'No changes' not in uv_sync.stderr"
+      notify: Restart MatrixOS
+
+    - name: Install the systemd unit
+      become: true
+      ansible.builtin.template:
+        src: matrix.service.j2
+        dest: /etc/systemd/system/matrix.service
+        mode: "0644"
+      notify: Restart MatrixOS
+
+    - name: Enable and start MatrixOS
+      become: true
+      ansible.builtin.systemd:
+        name: matrix
+        enabled: true
+        state: started
+        daemon_reload: true
+
+  handlers:
+    - name: Restart MatrixOS
+      become: true
+      ansible.builtin.systemd:
+        name: matrix
+        state: restarted
+        daemon_reload: true

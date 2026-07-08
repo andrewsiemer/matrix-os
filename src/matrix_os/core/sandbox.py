@@ -60,6 +60,7 @@ def _process_run_loop(app: "BaseApp", send_queue, recv_queue, app_id: str, log_q
 
     running = True
     paused = False
+    last_focus = False
 
     def send_msg(msg_type: MessageType, payload=None):
         msg = Message(type=msg_type, source=app_id, payload=payload)
@@ -108,6 +109,12 @@ def _process_run_loop(app: "BaseApp", send_queue, recv_queue, app_id: str, log_q
                     framebuffer = app.render()
                     if framebuffer:
                         send_msg(MessageType.FRAME_READY, payload=framebuffer)
+
+                    # Report display-focus changes (persist/interrupt requests)
+                    focus = bool(app.wants_focus())
+                    if focus != last_focus:
+                        send_msg(MessageType.APP_FOCUS, payload=focus)
+                        last_focus = focus
                 except Exception as e:
                     log.error(f"App '{app.manifest.name}' render error: {e}")
 
@@ -164,6 +171,16 @@ class AppWrapper:
         self._running = False
 
         if self._process and self._process.is_alive():
+            # Ask the app to shut down cleanly (runs on_stop) before joining.
+            try:
+                from .ipc import Message, MessageType
+
+                self.channel.recv_queue.put_nowait(
+                    Message(type=MessageType.APP_STOP, source="kernel", target=self.app.app_id)
+                )
+            except Exception:
+                pass
+
             self._process.join(timeout=timeout)
             if self._process.is_alive():
                 log.warning(f"Force terminating app '{self.app.manifest.name}'")

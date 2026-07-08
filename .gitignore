@@ -9,3 +9,10 @@ __pycache__/
 
 # App data directory
 data/*
+
+# App + system configuration (seeded from defaults on first run, per-machine)
+apps.json
+settings.json
+
+# Ansible inventory (copied from inventory.ini.example)
+deploy/ansible/inventory.ini

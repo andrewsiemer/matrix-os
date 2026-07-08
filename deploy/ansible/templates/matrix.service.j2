@@ -1,0 +1,20 @@
+# Managed by Ansible ({{ playbook_dir }}). Do not edit by hand.
+[Unit]
+Description=MatrixOS LED Matrix Display
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# rgbmatrix needs GPIO/root; DisplayConfig.drop_privileges lowers privileges
+# after the matrix is initialized.
+User=root
+WorkingDirectory={{ project_dir }}
+# Run the venv console script directly (not `uv run`) so the root service never
+# mutates the virtualenv, which `uv sync` manages as the deploy user.
+ExecStart={{ project_dir }}/.venv/bin/matrix-os --host 0.0.0.0 --port {{ matrix_os_port | default(8000) }}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

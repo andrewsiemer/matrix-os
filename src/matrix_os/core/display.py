@@ -116,6 +116,19 @@ class FrameBuffer:
         fb._data = self._data.copy()
         return fb
 
+    def dimmed(self, brightness: int) -> "FrameBuffer":
+        """Return a copy scaled to the given brightness percent (0-100).
+
+        Used to reflect brightness in the web preview (hardware panels dim via
+        their own PWM brightness instead).
+        """
+        if brightness >= 100:
+            return self.copy()
+        factor = max(0, min(100, brightness)) / 100.0
+        fb = FrameBuffer(self.width, self.height)
+        fb._data = (self._data.astype(np.float32) * factor).astype(np.uint8)
+        return fb
+
 
 class Display:
     """
@@ -129,6 +142,11 @@ class Display:
         self._matrix: Optional["RGBMatrix"] = None
         self._canvas = None
         self._initialized = False
+
+    @property
+    def is_simulation(self) -> bool:
+        """True when running without real matrix hardware (simulation mode)."""
+        return self._matrix is None
 
     @property
     def width(self) -> int:

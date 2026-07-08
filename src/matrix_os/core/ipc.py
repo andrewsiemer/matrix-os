@@ -30,6 +30,7 @@ class MessageType(Enum):
     APP_RESUME = auto()
     APP_ERROR = auto()
     APP_READY = auto()
+    APP_FOCUS = auto()  # App requests/releases display focus (payload: bool)
 
     # System events
     SYSTEM_SHUTDOWN = auto()

@@ -1,0 +1,193 @@
+{% extends "base.html" %}
+
+{% block title %}MatrixOS - Apps{% endblock %}
+
+{% block extra_css %}
+<link href="/static/css/status.css" rel="stylesheet">
+{% endblock %}
+
+{% block content %}
+<div class="apps-page container">
+    <div class="status-header">
+        <div class="status-indicator">
+            <span class="status-dot"></span>
+            <span>App Configuration</span>
+        </div>
+        <span class="text-muted small" id="apps-msg"></span>
+    </div>
+
+    <div id="app-list"></div>
+
+    <h2 class="section-title">Add App</h2>
+    <div class="app-card" id="add-card">
+        <div class="app-row">
+            <label class="field">
+                <span class="field-label">Type</span>
+                <select id="add-type"></select>
+            </label>
+            <label class="field">
+                <span class="field-label">ID (optional)</span>
+                <input type="text" id="add-id" placeholder="auto">
+            </label>
+            <label class="field">
+                <span class="field-label">Duration (s)</span>
+                <input type="number" id="add-duration" value="15" min="1" step="1">
+            </label>
+            <label class="form-check" id="add-persist-wrap" title="Hold the display while this app is active">
+                <input type="checkbox" class="form-check-input" id="add-persist">
+                <span class="form-check-label">Persist</span>
+            </label>
+        </div>
+        <div class="app-row" id="add-params"></div>
+        <div class="app-actions">
+            <button class="btn" onclick="addApp()">Add</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let TYPES = [];
+
+    function specsFor(type) {
+        const t = TYPES.find(x => x.type === type);
+        return t ? t.params : [];
+    }
+
+    function paramInputs(type, values, prefix) {
+        const specs = specsFor(type);
+        if (!specs.length) return '<span class="text-muted small">No parameters</span>';
+        return specs.map(p => {
+            const v = values && values[p.name] != null ? values[p.name] : (p.default != null ? p.default : '');
+            const inputType = (p.kind === 'int' || p.kind === 'float') ? 'number' : 'text';
+            const step = p.kind === 'float' ? 'any' : (p.kind === 'int' ? '1' : '');
+            return `
+                <label class="field">
+                    <span class="field-label">${p.label}${p.optional ? ' <span class="text-muted">(opt)</span>' : ''}</span>
+                    <input type="${inputType}" ${step ? `step="${step}"` : ''}
+                           data-param="${p.name}" data-kind="${p.kind}"
+                           id="${prefix}-param-${p.name}" value="${v}">
+                </label>`;
+        }).join('');
+    }
+
+    function collectParams(prefix, type) {
+        const params = {};
+        specsFor(type).forEach(p => {
+            const el = document.getElementById(`${prefix}-param-${p.name}`);
+            if (el && el.value !== '') params[p.name] = el.value;
+        });
+        return params;
+    }
+
+    function msg(text, isError) {
+        const el = document.getElementById('apps-msg');
+        el.textContent = text;
+        el.style.color = isError ? 'var(--accent)' : 'var(--text-secondary)';
+        if (!isError) setTimeout(() => { el.textContent = ''; }, 2500);
+    }
+
+    function renderList(apps) {
+        const list = document.getElementById('app-list');
+        list.innerHTML = '';
+        apps.forEach(app => {
+            const card = document.createElement('div');
+            card.className = 'app-card';
+            card.innerHTML = `
+                <div class="app-row">
+                    <label class="form-check">
+                        <input type="checkbox" class="form-check-input" id="en-${app.id}" ${app.enabled ? 'checked' : ''}>
+                        <span class="form-check-label">Enabled</span>
+                    </label>
+                    <span class="app-name">${app.label} <span class="text-muted small">${app.id}</span></span>
+                    <label class="field">
+                        <span class="field-label">Duration (s)</span>
+                        <input type="number" id="dur-${app.id}" value="${app.duration}" min="1" step="1">
+                    </label>
+                    ${app.supports_persist ? `
+                    <label class="form-check" title="Hold the display while this app is active">
+                        <input type="checkbox" class="form-check-input" id="persist-${app.id}" ${app.persist ? 'checked' : ''}>
+                        <span class="form-check-label">Persist</span>
+                    </label>` : ''}
+                </div>
+                <div class="app-row" id="params-${app.id}">${paramInputs(app.type, app.params, app.id)}</div>
+                <div class="app-actions">
+                    <button class="btn" data-save="${app.id}">Save</button>
+                    <button class="btn btn-danger" data-del="${app.id}">Delete</button>
+                </div>
+            `;
+            card.querySelector(`[data-save="${app.id}"]`).addEventListener('click', () => saveApp(app.id, app.type));
+            card.querySelector(`[data-del="${app.id}"]`).addEventListener('click', () => delApp(app.id));
+            list.appendChild(card);
+        });
+    }
+
+    function renderAddTypes() {
+        const sel = document.getElementById('add-type');
+        sel.innerHTML = TYPES.map(t => `<option value="${t.type}">${t.label}</option>`).join('');
+        const update = () => {
+            const t = TYPES.find(x => x.type === sel.value);
+            document.getElementById('add-params').innerHTML = paramInputs(sel.value, {}, 'add');
+            const supports = !!(t && t.supports_persist);
+            document.getElementById('add-persist-wrap').style.display = supports ? '' : 'none';
+            document.getElementById('add-persist').checked = supports && !!t.default_persist;
+        };
+        sel.addEventListener('change', update);
+        update();
+    }
+
+    async function load() {
+        const res = await fetch('/api/config');
+        const data = await res.json();
+        TYPES = data.types;
+        renderAddTypes();
+        renderList(data.apps);
+    }
+
+    async function saveApp(id, type) {
+        const persistEl = document.getElementById(`persist-${id}`);
+        const patch = {
+            enabled: document.getElementById(`en-${id}`).checked,
+            duration: parseFloat(document.getElementById(`dur-${id}`).value),
+            persist: persistEl ? persistEl.checked : false,
+            params: collectParams(id, type),
+        };
+        const res = await fetch(`/api/config/${id}`, {
+            method: 'PATCH',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(patch),
+        });
+        if (res.ok) { msg(`Saved ${id}`); load(); }
+        else { msg(`Save failed: ${(await res.json()).detail}`, true); }
+    }
+
+    async function delApp(id) {
+        if (!confirm(`Delete app '${id}'?`)) return;
+        const res = await fetch(`/api/config/${id}`, {method: 'DELETE'});
+        if (res.ok) { msg(`Deleted ${id}`); load(); }
+        else { msg('Delete failed', true); }
+    }
+
+    async function addApp() {
+        const type = document.getElementById('add-type').value;
+        const body = {
+            id: document.getElementById('add-id').value.trim(),
+            type: type,
+            enabled: true,
+            duration: parseFloat(document.getElementById('add-duration').value),
+            persist: document.getElementById('add-persist').checked,
+            params: collectParams('add', type),
+        };
+        const res = await fetch('/api/config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body),
+        });
+        if (res.ok) { msg('App added'); document.getElementById('add-id').value = ''; load(); }
+        else { msg(`Add failed: ${(await res.json()).detail}`, true); }
+    }
+
+    load();
+</script>
+{% endblock %}

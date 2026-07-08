@@ -15,13 +15,13 @@ from multiple sandboxed apps.
 
 import argparse
 import logging
-import os
 import threading
 
-from matrix_os.apps import BasicClockApp, DVDApp, EarthApp, ImageViewerApp, SlackStatusApp
-from matrix_os.apps.stocks import StocksApp
-from matrix_os.apps.weather import WeatherApp
+from matrix_os.apps.registry import APP_REGISTRY, coerce_params
 from matrix_os.core import Kernel, SystemConfig
+from matrix_os.core.appconfig import AppConfigStore
+from matrix_os.core.controller import SystemController
+from matrix_os.core.settings import SystemSettingsStore
 
 # Setup logging
 logging.basicConfig(
@@ -41,6 +41,7 @@ logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 def setup_web_integration(kernel):
     """Set up web interface integration with the kernel."""
     from matrix_os.core import set_app_change_callback, set_frame_callback
+    from matrix_os.core.kernel import set_app_remove_callback
     from matrix_os.web import AppInfo, get_shared_state
 
     shared_state = get_shared_state()
@@ -48,6 +49,7 @@ def setup_web_integration(kernel):
     # Set display dimensions from kernel config
     shared_state.display_width = kernel.display.width
     shared_state.display_height = kernel.display.height
+    shared_state.target_fps = 60
 
     # Set up frame callback
     def on_frame(frame):
@@ -73,6 +75,12 @@ def setup_web_integration(kernel):
             )
 
     set_app_change_callback(register_app_info)
+
+    # Drop app info from the web view when an app is unregistered live
+    def unregister_app_info(app_id):
+        shared_state.unregister_app(app_id)
+
+    set_app_remove_callback(unregister_app_info)
 
     # Set up scheduler callback for app changes
     def on_app_change(old_app, new_app):
@@ -196,26 +204,35 @@ def main():
     kernel = Kernel(config)
 
     # Set up web integration
-    setup_web_integration(kernel)
+    shared_state = setup_web_integration(kernel)
 
-    # Register apps
-    # Each app runs in its own process and communicates with the kernel via IPC
+    # Register apps from the persisted config (editable live from the web UI).
+    # Each app runs in its own process and communicates with the kernel via IPC.
+    store = AppConfigStore()
+    for entry in store.list():
+        if not entry.enabled:
+            continue
+        spec = APP_REGISTRY.get(entry.type)
+        if spec is None:
+            log.warning("Skipping app '%s': unknown type '%s'", entry.id, entry.type)
+            continue
+        params = coerce_params(entry.type, entry.params)
+        kernel.register_app(
+            spec.cls,
+            app_id=entry.id,
+            duration=entry.duration,
+            persist=entry.persist,
+            **params,
+        )
 
-    # Fun/visual apps
-    kernel.register_app(DVDApp, duration=15)
-    kernel.register_app(EarthApp, duration=15)
-    kernel.register_app(StocksApp, symbol="NVDA", duration=15)
-    kernel.register_app(StocksApp, symbol="VTI", duration=15)
-    kernel.register_app(WeatherApp, duration=15)
-    kernel.register_app(SlackStatusApp, duration=15)
-    kernel.register_app(BasicClockApp, duration=15)
-    # kernel.register_app(BinaryClockApp, duration=15)
+    # Load and apply global display settings (brightness + sleep window)
+    settings_store = SystemSettingsStore()
+    kernel.apply_settings(settings_store.get())
 
-    # Static image
-    if os.path.exists(nvidia_path := os.path.join(kernel.images_path, "nvidia.png")):
-        kernel.register_app(ImageViewerApp, image_path=nvidia_path, duration=10)
+    # Expose config/status/settings/live-apply to the web layer
+    shared_state.controller = SystemController(kernel, store, shared_state, settings_store)
 
-    log.info("All apps registered. Starting kernel...")
+    log.info("Apps registered from %s. Starting kernel...", store.path)
 
     # Start web server in background
     run_web_server_thread(args.host, args.port)

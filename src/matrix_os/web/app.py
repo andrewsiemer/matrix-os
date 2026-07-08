@@ -17,9 +17,9 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Deque, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Deque, Dict, List, Optional
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -66,6 +66,16 @@ class SharedState:
     display_height: int = 32
     scale_factor: int = 12
 
+    # System info (populated by main.py)
+    start_time: float = 0.0
+    mode: str = "simulation"
+    target_fps: int = 60
+
+    # Facade for querying/mutating app config live (set by main.py).
+    # Exposes: get_status(), list_config(), available_types(),
+    # add_app(data), update_app(id, patch), remove_app(id)
+    controller: Optional[Any] = None
+
     def set_frame(self, frame: "FrameBuffer") -> None:
         """Update the current frame (thread-safe)."""
         with self._frame_lock:
@@ -96,6 +106,13 @@ class SharedState:
         """Register an app's info (thread-safe)."""
         with self._apps_lock:
             self._apps[app_info.app_id] = app_info
+
+    def unregister_app(self, app_id: str) -> None:
+        """Drop an app's info (thread-safe)."""
+        with self._apps_lock:
+            self._apps.pop(app_id, None)
+            if self._current_app == app_id:
+                self._current_app = None
 
     def set_current_app(self, app_id: Optional[str]) -> None:
         """Set the currently active app (thread-safe)."""
@@ -225,6 +242,96 @@ def create_app(shared_state: Optional[SharedState] = None) -> FastAPI:
                 "active_page": "logs",
             },
         )
+
+    @app.get("/apps", response_class=HTMLResponse)
+    async def apps_page(request: Request):
+        """App configuration page."""
+        return templates.TemplateResponse(
+            "apps.html",
+            {
+                "request": request,
+                "active_page": "apps",
+            },
+        )
+
+    @app.get("/settings", response_class=HTMLResponse)
+    async def settings_page(request: Request):
+        """Display settings page (brightness + sleep window)."""
+        return templates.TemplateResponse(
+            "settings.html",
+            {
+                "request": request,
+                "active_page": "settings",
+            },
+        )
+
+    def _require_controller():
+        if shared_state.controller is None:
+            raise HTTPException(status_code=503, detail="Controller not available")
+        return shared_state.controller
+
+    @app.get("/api/status")
+    async def api_status():
+        """System status snapshot for the status page."""
+        controller = _require_controller()
+        return controller.get_status()
+
+    @app.get("/api/config")
+    async def api_config_list():
+        """List configured apps and the available app types."""
+        controller = _require_controller()
+        return {
+            "apps": controller.list_config(),
+            "types": controller.available_types(),
+        }
+
+    @app.post("/api/config")
+    async def api_config_add(request: Request):
+        """Add a new configured app."""
+        controller = _require_controller()
+        data = await request.json()
+        try:
+            return controller.add_app(data)
+        except (ValueError, KeyError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.patch("/api/config/{app_id}")
+    async def api_config_update(app_id: str, request: Request):
+        """Update an existing configured app (enabled/duration/persist/params)."""
+        controller = _require_controller()
+        patch = await request.json()
+        try:
+            return controller.update_app(app_id, patch)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Unknown app '{app_id}'")
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.delete("/api/config/{app_id}")
+    async def api_config_delete(app_id: str):
+        """Remove a configured app."""
+        controller = _require_controller()
+        try:
+            controller.remove_app(app_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Unknown app '{app_id}'")
+        return {"status": "ok"}
+
+    @app.get("/api/settings")
+    async def api_settings_get():
+        """Get global display settings (brightness + sleep window)."""
+        controller = _require_controller()
+        return controller.get_settings()
+
+    @app.patch("/api/settings")
+    async def api_settings_update(request: Request):
+        """Update global display settings."""
+        controller = _require_controller()
+        patch = await request.json()
+        try:
+            return controller.update_settings(patch)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     @app.get("/stream")
     async def stream_display():
