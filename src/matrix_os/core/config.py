@@ -18,6 +18,7 @@ class EnvSettings(BaseSettings):
     )
 
     stocks_api_key: str = ""
+    stocks_daily_api_credits: int = 800
     slack_user_id: str = ""
     slack_token: str = ""
     local_tz: str = "America/Chicago"

@@ -4,14 +4,21 @@ Stocks App
 Displays stock price and chart from TwelveData API.
 Uses SQLite for caching data between app restarts.
 
-API Strategy (matches original implementation):
-- Uses market_state API to get exact time_to_open/time_to_close
-- When market is OPEN: fetch data every 3 minutes
-- When market is CLOSED: wait until market opens (no polling)
-- Validates trading days before fetching
+API Strategy:
+- market_state drives scheduling via time_to_open/time_to_close. It is billed
+  like any other call, so it is shared across symbols and the overnight wait is
+  capped on the local clock rather than by polling
+- When market is OPEN: refresh at an adaptive rate that spends the day's
+  remaining API credits evenly over the rest of the session
+- When market is CLOSED: one closing snapshot, then no billed calls until
+  the next session
+- Credits are metered per API key, not per process, so the ledger is shared
+  through SQLite (see ApiBudget). Running out means waiting for the next
+  trading day rather than degrading into failed requests.
 """
 
 import logging
+import re
 import threading
 import time
 import zoneinfo
@@ -24,13 +31,19 @@ from PIL import Image, ImageDraw
 from ...core.display import FrameBuffer
 from ..base import AppManifest, BaseApp
 from ..fonts import get_font
-from .db import StockCache, StockData
+from .db import ApiBudget, StockCache, StockData, get_trading_date
 
 log = logging.getLogger(__name__)
 
 # Module-level storage for shared state (avoids pickle issues with class-level locks)
 _stocks_cache: Optional[StockCache] = None
 _stocks_cache_lock = threading.Lock()
+_api_budget: Optional[ApiBudget] = None
+_api_budget_lock = threading.Lock()
+
+# Previous-day close, keyed by trading day. Constant for a whole session, so it
+# is worth one credit per day rather than one per refresh.
+_close_prices: Dict[str, float] = {}
 
 # Scheduled update times (shared across instances)
 _next_data_update: float = 0
@@ -38,10 +51,49 @@ _next_market_check: float = 0
 _market_is_open: bool = False
 _current_trading_day: Optional[str] = None
 _previous_trading_day: Optional[str] = None
+_market_check_in_flight: bool = False
+_final_fetch_done: bool = False
+_market_close_ts: float = 0.0
 _schedule_lock = threading.Lock()
 
-# Update interval when market is open (3 minutes, matching original)
+# Fallback update interval when the budget cannot be consulted
 _MARKET_OPEN_UPDATE_INTERVAL = 3 * 60
+
+# Credit cost per request. market_state is free; every time_series call bills one.
+_CREDITS_PER_REQUEST = 1
+
+# Held back from the daily allowance so the closing snapshot and the next
+# morning's trading-day lookups are always affordable, however busy the session.
+_CREDIT_RESERVE = 25
+
+# Bounds on the adaptive refresh rate. Faster than a minute wastes credits on a
+# 64px chart; slower than 15 minutes stops looking live.
+_MIN_UPDATE_INTERVAL = 60
+_MAX_UPDATE_INTERVAL = 15 * 60
+
+# Retry interval after any market-state failure
+_MARKET_CHECK_RETRY_INTERVAL = 5 * 60
+
+# Absolute ceiling on the gap between market checks, so a bad schedule can never
+# strand the app on a stale trading day. market_state is billed, so this is a
+# backstop only -- _seconds_until_expected_open does the real overnight capping.
+_MAX_MARKET_CHECK_INTERVAL = 4 * 60 * 60
+
+# How far back to walk when hunting for a trading day before giving up
+_MAX_TRADING_DAY_LOOKBACK = 10
+
+
+class _BudgetExhausted(Exception):
+    """Today's API allowance cannot cover a call. Wait for the next session."""
+
+
+def _redact(url: str) -> str:
+    """Strip the API key from a URL before it reaches the logs.
+
+    The web UI exposes a log viewer, and journald keeps these for weeks -- a key
+    logged once is a key leaked to everyone who can see the display's logs.
+    """
+    return re.sub(r"(apikey=)[^&\s]+", r"\1***", str(url))
 
 
 class StocksApp(BaseApp):
@@ -65,11 +117,31 @@ class StocksApp(BaseApp):
                 _stocks_cache = StockCache()
             return _stocks_cache
 
+    def _get_budget(self) -> ApiBudget:
+        """Get or create the shared daily credit ledger."""
+        global _api_budget  # noqa: PLW0603
+        with _api_budget_lock:
+            if _api_budget is None:
+                _api_budget = ApiBudget(daily_limit=self._daily_credits)
+            return _api_budget
+
+    def _spend(self, credits: int = _CREDITS_PER_REQUEST, reserve: int = _CREDIT_RESERVE) -> bool:
+        """Claim credits before an API call. False means: do not make the call."""
+        if not self._get_budget().try_spend(credits, reserve=reserve):
+            log.info(
+                "%s: daily API credit budget exhausted (%d used), holding until tomorrow",
+                self._symbol,
+                self._get_budget().used(),
+            )
+            return False
+        return True
+
     def __init__(self, *args, symbol: str = "NVDA", **kwargs):
         super().__init__(*args, **kwargs)
 
         self._symbol = symbol
         self._api_key = self.get_env("stocks_api_key", "")
+        self._daily_credits = int(self.get_env("stocks_daily_api_credits", 800) or 800)
         self._timezone = "America/New_York"
         self._exchange = "NYSE"
         self._open_time = 390  # minutes in stock day
@@ -134,8 +206,97 @@ class StocksApp(BaseApp):
         with _schedule_lock:
             _next_market_check = 0
 
+    def _schedule_market_check(self, delay: float) -> None:
+        """Schedule the next market state check, clamped so it can never be lost."""
+        global _next_market_check  # noqa: PLW0603
+        # Waking before the next plausible open is wasted spend, but sleeping
+        # past it costs a whole session -- so cap on the local clock, for free.
+        delay = min(delay, self._seconds_until_expected_open() + 60)
+        delay = max(60.0, min(delay, _MAX_MARKET_CHECK_INTERVAL))
+        with _schedule_lock:
+            _next_market_check = time.time() + delay
+        log.info("Next market check for %s in %.1f min", self._symbol, delay / 60)
+
+    @staticmethod
+    def _seconds_until_expected_open() -> float:
+        """Seconds to the next weekday 9:30 ET, computed locally and for free.
+
+        A holiday still reports an open here; the market state lookup that
+        follows will say otherwise and the app simply sleeps again. Costing one
+        credit on a holiday morning beats paying to poll all night.
+        """
+        eastern = zoneinfo.ZoneInfo("America/New_York")
+        now = datetime.now(eastern)
+
+        candidate = now.replace(hour=9, minute=30, second=0, microsecond=0)
+        if candidate <= now:
+            candidate += timedelta(days=1)
+        while candidate.weekday() > 4:
+            candidate += timedelta(days=1)
+
+        return max(0.0, (candidate - now).total_seconds())
+
+    def _compute_update_interval(self) -> Optional[float]:
+        """Spread this symbol's remaining credits evenly over the rest of the session.
+
+        Returns the seconds to wait before the next refresh, or None when the
+        budget is spent -- in which case the caller stops polling until the next
+        trading day resets the ledger.
+        """
+        budget = self._get_budget()
+        budget.heartbeat(self._symbol)
+
+        with _schedule_lock:
+            seconds_left = _market_close_ts - time.time()
+
+        if seconds_left <= 0:
+            return None
+
+        # Every symbol sharing the key gets an equal cut of what is left
+        share = max(0, budget.remaining() - _CREDIT_RESERVE) / budget.active_symbols()
+        affordable_updates = share / _CREDITS_PER_REQUEST
+
+        if affordable_updates < 1:
+            return None
+
+        interval = seconds_left / affordable_updates
+        interval = max(_MIN_UPDATE_INTERVAL, min(interval, _MAX_UPDATE_INTERVAL))
+
+        log.info(
+            "%s: %d credits left, %d symbols sharing, %.0f min to close -> refresh every %.1f min",
+            self._symbol,
+            budget.remaining(),
+            budget.active_symbols(),
+            seconds_left / 60,
+            interval / 60,
+        )
+        return interval
+
+    @staticmethod
+    def _parse_duration(value: Optional[str], default_minutes: int = 5) -> float:
+        """Parse a TwelveData 'H:MM:SS' duration into seconds."""
+        try:
+            parts = str(value).split(":")
+            return int(parts[0]) * 3600 + int(parts[1]) * 60
+        except (AttributeError, IndexError, TypeError, ValueError):
+            log.warning("Could not parse duration %r, using %d min", value, default_minutes)
+            return default_minutes * 60
+
     def _get_market_state(self) -> Optional[Dict]:
-        """Get market state from TwelveData API (free endpoint)."""
+        """Get market state for the exchange. Billed, so shared and cached.
+
+        Raises `_BudgetExhausted` when the day's allowance cannot cover it.
+        """
+        budget = self._get_budget()
+
+        shared = budget.get_market_state(self._exchange)
+        if shared is not None:
+            log.debug("Market state for %s served from shared cache", self._exchange)
+            return shared
+
+        if not self._spend():
+            raise _BudgetExhausted(f"no credits for {self._exchange} market state")
+
         try:
             url = f"https://api.twelvedata.com/market_state?exchange={self._exchange}&apikey={self._api_key}"
             response = requests.get(url, timeout=10)
@@ -143,6 +304,7 @@ class StocksApp(BaseApp):
 
             if isinstance(data, list) and len(data) > 0:
                 log.info("Market state: %s", data[0])
+                budget.set_market_state(self._exchange, data[0])
                 return data[0]
             elif isinstance(data, dict) and data.get("status") == "error":
                 log.warning("Market state API error: %s", data.get("message"))
@@ -153,7 +315,40 @@ class StocksApp(BaseApp):
             return None
 
     def _is_trading_day(self, day: datetime) -> bool:
-        """Check if a given day is a trading day by querying API."""
+        """Check if a given day is a trading day.
+
+        Whether a past date traded never changes, so verdicts are cached
+        permanently -- weekends and holidays cost one credit once, ever.
+        """
+        day_str = day.strftime("%Y-%m-%d")
+        budget = self._get_budget()
+
+        cached = budget.get_trading_day(day_str)
+        if cached is not None:
+            log.debug("is_trading_day %s: %s (cached)", day_str, cached)
+            return cached
+
+        # Weekends are free to rule out
+        if day.weekday() > 4:
+            budget.set_trading_day(day_str, False)
+            return False
+
+        # Draws on the reserve: resolving the calendar is what the reserve is for,
+        # it is cached forever after, and nothing else works without it.
+        if not self._spend(reserve=0):
+            raise _BudgetExhausted(f"no credits to resolve trading day {day_str}")
+
+        result = self._query_is_trading_day(day)
+
+        # "No data yet" for today means the session has not opened, not that the
+        # market is closed -- caching that would strand us for the rest of the day.
+        if result or day_str < get_trading_date():
+            budget.set_trading_day(day_str, result)
+
+        return result
+
+    def _query_is_trading_day(self, day: datetime) -> bool:
+        """Ask the API whether `day` has intraday data. Costs one credit."""
         try:
             from twelvedata import TDClient, exceptions
 
@@ -176,13 +371,13 @@ class StocksApp(BaseApp):
                 except exceptions.BadRequestError:
                     log.warning("is_trading_day bad request")
                     return False
-                except exceptions.TwelveDataError:
+                except (exceptions.TwelveDataError, requests.RequestException):
                     timeout = 61 - datetime.now().second
                     log.warning("is_trading_day rate limited, waiting %d seconds", timeout)
                     tries -= 1
                     time.sleep(timeout)
             return False
-        except (ImportError, AttributeError) as e:
+        except Exception as e:
             log.warning("is_trading_day failed: %s", e)
             return False
 
@@ -203,83 +398,125 @@ class StocksApp(BaseApp):
             trading_day = now.replace(hour=open_hour, minute=open_min, second=0, microsecond=0)
 
         # Skip weekends and non-trading days
-        while trading_day.weekday() > 4 or not self._is_trading_day(trading_day):
-            trading_day -= timedelta(days=1)
+        trading_day = self._walk_back_to_trading_day(trading_day)
 
         # Get previous trading day
-        previous_day = trading_day - timedelta(days=1)
-        while previous_day.weekday() > 4 or not self._is_trading_day(previous_day):
-            previous_day -= timedelta(days=1)
+        previous_day = self._walk_back_to_trading_day(trading_day - timedelta(days=1))
 
         return trading_day, previous_day
 
-    def _update_market_state(self) -> None:
-        """Update market state and schedule next updates."""
-        global _next_data_update, _next_market_check, _market_is_open  # noqa: PLW0603
-        global _current_trading_day, _previous_trading_day  # noqa: PLW0603
+    def _walk_back_to_trading_day(self, day: datetime) -> datetime:
+        """Walk backwards from `day` to the nearest trading day.
 
-        log.info("Checking market state for %s", self._symbol)
+        Bounded: when the API is down or out of credits `_is_trading_day` reports
+        False for every day, which would otherwise walk backwards forever, burning
+        a request per iteration and never returning.
+        """
+        for _ in range(_MAX_TRADING_DAY_LOOKBACK):
+            if self._is_trading_day(day):
+                return day
+            day -= timedelta(days=1)
 
-        # Get trading days
-        trading_day, previous_day = self._get_trading_days()
-
-        with _schedule_lock:
-            _current_trading_day = trading_day.strftime("%Y-%m-%d")
-            _previous_trading_day = previous_day.strftime("%Y-%m-%d")
-
-        log.info(
-            "Current trading day: %s, Previous: %s", _current_trading_day, _previous_trading_day
+        raise RuntimeError(
+            f"No trading day found within {_MAX_TRADING_DAY_LOOKBACK} days of {day:%Y-%m-%d}"
         )
 
-        # Fetch data for current trading day
-        self._fetch_data(trading_day, previous_day)
+    def _update_market_state(self) -> None:
+        """Update market state and schedule next updates.
 
-        # Get market state to schedule next updates
-        market_state = self._get_market_state()
+        Runs on a background thread. Every exit path must leave a finite
+        `_next_market_check` behind, otherwise the app silently stops updating
+        and displays the last cached trading day until the process restarts.
+        """
+        global _next_data_update, _market_is_open, _market_close_ts  # noqa: PLW0603
+        global _current_trading_day, _previous_trading_day  # noqa: PLW0603
+        global _market_check_in_flight, _final_fetch_done  # noqa: PLW0603
 
-        if market_state is None:
-            # API failed, retry in 5 minutes
+        try:
+            log.info("Checking market state for %s", self._symbol)
+
+            market_state = self._get_market_state()
+
+            if market_state is None:
+                self._schedule_market_check(_MARKET_CHECK_RETRY_INTERVAL)
+                log.warning("Market state API failed, retrying shortly")
+                return
+
+            is_open = bool(market_state.get("is_market_open"))
+
             with _schedule_lock:
-                _next_market_check = time.time() + 300
-            log.warning("Market state API failed, retrying in 5 minutes")
-            return
+                _market_is_open = is_open
+                needs_final_fetch = not _final_fetch_done
+                if is_open:
+                    _market_close_ts = time.time() + self._parse_duration(
+                        market_state.get("time_to_close")
+                    )
+                else:
+                    _market_close_ts = 0.0
+                    _next_data_update = float("inf")
 
-        with _schedule_lock:
-            if market_state.get("is_market_open"):
-                _market_is_open = True
-
-                # Schedule data updates every 3 minutes while market is open
-                _next_data_update = time.time() + _MARKET_OPEN_UPDATE_INTERVAL
-
-                # Schedule market check for after close
-                time_to_close = market_state.get("time_to_close", "0:05:00")
-                parts = time_to_close.split(":")
-                minutes_to_close = int(parts[0]) * 60 + int(parts[1]) + 5
-                _next_market_check = time.time() + (minutes_to_close * 60)
-
-                log.info(
-                    "Market OPEN - next data update in 3 min, market check in %d min",
-                    minutes_to_close,
-                )
+            if is_open:
+                delay = self._parse_duration(market_state.get("time_to_close")) + 300
+                interval = self._compute_update_interval()
+                with _schedule_lock:
+                    _next_data_update = (
+                        time.time() + interval if interval is not None else float("inf")
+                    )
+                if interval is None:
+                    log.info("Market OPEN but credits exhausted - waiting for next trading day")
             else:
-                _market_is_open = False
-                _next_data_update = float("inf")  # Don't update data when market closed
+                delay = self._parse_duration(market_state.get("time_to_open")) + 300
+                log.info("Market CLOSED")
+            self._schedule_market_check(delay)
 
-                # Schedule market check for after open
-                time_to_open = market_state.get("time_to_open", "0:05:00")
-                parts = time_to_open.split(":")
-                minutes_to_open = int(parts[0]) * 60 + int(parts[1]) + 5
-                _next_market_check = time.time() + (minutes_to_open * 60)
+            # Resolving trading days and fetching costs API credits, so only do it
+            # while the market is open or once to capture the closing values.
+            if not is_open and not needs_final_fetch:
+                log.info("Market closed and closing data already captured, skipping fetch")
+                return
 
-                log.info("Market CLOSED - next market check in %d min", minutes_to_open)
+            trading_day, previous_day = self._get_trading_days()
 
-    def _fetch_data(self, trading_day: datetime, previous_day: datetime) -> None:
-        """Fetch stock data from API."""
+            with _schedule_lock:
+                _current_trading_day = trading_day.strftime("%Y-%m-%d")
+                _previous_trading_day = previous_day.strftime("%Y-%m-%d")
+                # Market open invalidates the previous close's final snapshot
+                _final_fetch_done = not is_open
+
+            log.info(
+                "Current trading day: %s, Previous: %s", _current_trading_day, _previous_trading_day
+            )
+
+            self._fetch_data(trading_day, previous_day, final=not is_open)
+
+        except _BudgetExhausted as e:
+            # Retrying costs nothing but achieves nothing. Sleep until the
+            # ledger has rolled over and there is something to spend again.
+            log.info("%s: %s - waiting for the next trading day", self._symbol, e)
+            self._schedule_market_check(self._seconds_until_expected_open() + 60)
+        except Exception as e:
+            log.warning("Market state update failed for %s: %s", self._symbol, e)
+            self._schedule_market_check(_MARKET_CHECK_RETRY_INTERVAL)
+        finally:
+            with _schedule_lock:
+                _market_check_in_flight = False
+
+    def _fetch_data(
+        self, trading_day: datetime, previous_day: datetime, final: bool = False
+    ) -> None:
+        """Fetch stock data from API.
+
+        `final` marks the one post-close snapshot that leaves the display showing
+        correct closing values all evening. It may draw on the credit reserve,
+        because arriving at the close with nothing left to spend is exactly the
+        outcome the reserve exists to prevent.
+        """
         if self._is_fetching:
             return
 
         self._is_fetching = True
-        log.info("Fetching data for %s", self._symbol)
+        reserve = 0 if final else _CREDIT_RESERVE
+        log.info("Fetching data for %s%s", self._symbol, " (closing snapshot)" if final else "")
 
         def fetch():
             try:
@@ -287,21 +524,11 @@ class StocksApp(BaseApp):
 
                 td = TDClient(apikey=self._api_key)
 
-                # Get previous day close price
-                ts_daily = td.time_series(
-                    symbol=self._symbol,
-                    interval="1day",
-                    outputsize=1,
-                    start_date=previous_day,
-                    end_date=previous_day + timedelta(minutes=self._open_time),
-                    timezone=self._timezone,
-                )
+                close_price = self._get_close_price(td, trading_day, previous_day, reserve)
+                if close_price is None:
+                    return
 
-                daily_data = self._try_api(ts_daily)
-                if daily_data and len(daily_data) > 0:
-                    close_price = float(daily_data[0]["close"])
-                else:
-                    log.warning("No daily data for %s", self._symbol)
+                if not self._spend(reserve=reserve):
                     return
 
                 # Get trading day intraday data
@@ -355,13 +582,61 @@ class StocksApp(BaseApp):
 
                 log.info("Stock data updated: %s = $%.2f", self._symbol, current_price)
 
-            except (ImportError, AttributeError, KeyError, ValueError) as e:
+            except Exception as e:
                 log.warning("Stock fetch failed: %s", e)
             finally:
                 self._is_fetching = False
 
-        thread = threading.Thread(target=fetch, daemon=True)
-        thread.start()
+        try:
+            thread = threading.Thread(target=fetch, daemon=True)
+            thread.start()
+        except Exception as e:
+            self._is_fetching = False
+            log.warning("Could not start stock fetch thread: %s", e)
+
+    def _get_close_price(
+        self, td, trading_day: datetime, previous_day: datetime, reserve: int = _CREDIT_RESERVE
+    ) -> Optional[float]:
+        """Previous session's close, fetched at most once per trading day.
+
+        This anchors the chart's zero line and the daily change, and it does not
+        move once the session opens -- so re-fetching it on every refresh would
+        double the cost of the whole app for no new information.
+        """
+        trading_day_str = trading_day.strftime("%Y-%m-%d")
+        key = f"{self._symbol}:{trading_day_str}"
+
+        if key in _close_prices:
+            return _close_prices[key]
+
+        # Survives a process restart: a cached row for this day already has it
+        cached = self._get_cache().get(self._symbol)
+        if cached and cached.trading_day == trading_day_str and cached.close_price:
+            _close_prices[key] = cached.close_price
+            log.debug("Reusing stored close price for %s: %.2f", key, cached.close_price)
+            return cached.close_price
+
+        if not self._spend(reserve=reserve):
+            return None
+
+        ts_daily = td.time_series(
+            symbol=self._symbol,
+            interval="1day",
+            outputsize=1,
+            start_date=previous_day,
+            end_date=previous_day + timedelta(minutes=self._open_time),
+            timezone=self._timezone,
+        )
+
+        daily_data = self._try_api(ts_daily)
+        if not daily_data:
+            log.warning("No daily data for %s", self._symbol)
+            return None
+
+        close_price = float(daily_data[0]["close"])
+        _close_prices[key] = close_price
+        log.info("Fetched close price for %s: %.2f", key, close_price)
+        return close_price
 
     def _try_api(self, ts) -> Optional[List[Dict]]:
         """Try API call with retry logic (matches original implementation)."""
@@ -372,14 +647,14 @@ class StocksApp(BaseApp):
             try:
                 return ts.as_json()
             except exceptions.BadRequestError:
-                log.warning("API bad request: %s", ts.as_url())
+                log.warning("API bad request: %s", _redact(ts.as_url()))
                 return None
-            except exceptions.TwelveDataError:
+            except (exceptions.TwelveDataError, requests.RequestException):
                 timeout = 61 - datetime.now().second
                 log.warning(
                     "API out of credits, retrying in %d seconds (%s)",
                     timeout,
-                    ts.as_url(),
+                    _redact(ts.as_url()),
                 )
                 tries -= 1
                 time.sleep(timeout)
@@ -451,6 +726,7 @@ class StocksApp(BaseApp):
     def update(self) -> None:
         """Check if any scheduled updates are due."""
         global _next_data_update, _next_market_check  # noqa: PLW0603
+        global _market_check_in_flight  # noqa: PLW0603
 
         now = time.time()
         should_check_market = False
@@ -460,12 +736,16 @@ class StocksApp(BaseApp):
 
         # Check if market state update is due
         with _schedule_lock:
-            if now >= _next_market_check:
-                _next_market_check = float("inf")  # Prevent re-entry
+            if now >= _next_market_check and not _market_check_in_flight:
+                # Back off rather than disabling: if the check thread dies or hangs
+                # this still fires again instead of freezing the app forever.
+                _next_market_check = now + _MARKET_CHECK_RETRY_INTERVAL
+                _market_check_in_flight = True
                 should_check_market = True
 
             # Check if data update is due (only when market is open)
             elif _market_is_open and now >= _next_data_update:
+                # Provisional: replaced below once the budget has been consulted
                 _next_data_update = now + _MARKET_OPEN_UPDATE_INTERVAL
                 should_fetch_data = True
 
@@ -480,11 +760,23 @@ class StocksApp(BaseApp):
                     ).replace(tzinfo=eastern)
 
         # Run market state update in background (outside lock)
-        if should_check_market and not self._is_fetching:
-            thread = threading.Thread(target=self._update_market_state, daemon=True)
-            thread.start()
+        if should_check_market:
+            try:
+                thread = threading.Thread(target=self._update_market_state, daemon=True)
+                thread.start()
+            except Exception as e:
+                log.warning("Could not start market check thread: %s", e)
+                with _schedule_lock:
+                    _market_check_in_flight = False
         elif should_fetch_data and trading_day and previous_day:
-            self._fetch_data(trading_day, previous_day)
+            # Re-pace against the live budget: as credits deplete the refresh
+            # rate stretches out, and once they run dry polling stops entirely
+            # until the ledger rolls over to the next trading day.
+            interval = self._compute_update_interval()
+            with _schedule_lock:
+                _next_data_update = time.time() + interval if interval is not None else float("inf")
+            if interval is not None:
+                self._fetch_data(trading_day, previous_day)
 
     def _get_text_width(self, draw: ImageDraw, text: str) -> int:
         """Get text width for right-alignment."""
